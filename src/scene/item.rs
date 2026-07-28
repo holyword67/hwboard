@@ -32,13 +32,14 @@ pub struct ImageItem {
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub rgba: std::sync::Arc<[u8]>,
+    pub mesh_dirty: bool, // 추가됨: 이동/리사이즈 될때 GPU 버텍스 갱신을 알리기 위함
 }
 
 impl ImageItem {
-    /// 선택 도구 리사이즈용 — top_left/size를 통째로 교체.
     pub fn set_bounds(&mut self, top_left: [f64; 2], size: [f64; 2]) {
         self.top_left = top_left;
         self.size = size;
+        self.mesh_dirty = true; // 변경 알림
     }
 }
 
@@ -47,26 +48,21 @@ pub enum ShapeKind {
     Circle,
     Line,
     Rectangle,
+    Triangle, // 추가됨
 }
 
-/// 도형 통일 모델 — 종류 상관없이 이동/리사이즈/회전이 각각
-/// center/half_extent/rotation 갱신 하나로 귀결됨.
-/// Line은 half_extent를 [절반 길이, 0.0]으로 씀(세로 반경 없음).
 #[derive(Debug, Clone)]
 pub struct Shape {
     pub kind: ShapeKind,
     pub center: [f64; 2],
     pub half_extent: [f64; 2],
-    pub rotation: f32, // 라디안, center 기준
+    pub rotation: f32,
     pub color: [f32; 4],
     pub stroke_width: f32,
-    /// 렌더용 테셀레이션 캐시 무효화 플래그. Stroke::mesh_dirty와 동일한
-    /// 역할 — center/half_extent/rotation이 바뀔 때마다 세워줘야 함.
     pub mesh_dirty: bool,
 }
 
 impl Shape {
-    /// 로컬(회전 전) 좌표계 기준 외곽선 점들.
     fn local_outline(&self) -> Vec<[f64; 2]> {
         let (hx, hy) = (self.half_extent[0], self.half_extent[1]);
         match self.kind {
@@ -83,10 +79,12 @@ impl Shape {
                     .collect()
             }
             ShapeKind::Line => vec![[-hx, 0.0], [hx, 0.0]],
+            ShapeKind::Triangle => vec![
+                [0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy], // 위(중앙), 우측하단, 좌측하단, 닫기
+            ],
         }
     }
 
-    /// world 좌표 기준 외곽선 (로컬 → 회전 → center 이동 순).
     pub fn world_outline(&self) -> Vec<[f64; 2]> {
         let sin_r = (self.rotation as f64).sin();
         let cos_r = (self.rotation as f64).cos();
@@ -105,9 +103,6 @@ impl Shape {
         [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]]
     }
 
-    /// world 좌표 기준 4개 코너(회전 반영). Line은 hy=0이라 상하 코너가
-    /// 겹쳐서 사실상 양 끝점 2개로 축약됨 — 별도 분기 불필요.
-    /// 선택 UI(회전된 bbox)와 리사이즈 핸들 위치에 씀.
     pub fn world_corners(&self) -> [[f64; 2]; 4] {
         let sin_r = (self.rotation as f64).sin();
         let cos_r = (self.rotation as f64).cos();
@@ -118,8 +113,6 @@ impl Shape {
         })
     }
 
-    /// world 좌표 point를 이 도형의 로컬(회전 전) 좌표계로 변환.
-    /// 히트테스트/리사이즈 드래그 양쪽에서 공용으로 씀.
     pub fn to_local(&self, point: [f64; 2]) -> [f64; 2] {
         let dx = point[0] - self.center[0];
         let dy = point[1] - self.center[1];
@@ -144,11 +137,17 @@ impl Shape {
                 let r = pad + (self.stroke_width as f64 * 0.5);
                 segment_dist_sq([-self.half_extent[0], 0.0], [self.half_extent[0], 0.0], [lx, ly]) <= r * r
             }
+            ShapeKind::Triangle => {
+                if ly < -self.half_extent[1] - pad || ly > self.half_extent[1] + pad {
+                    return false;
+                }
+                let progress = (ly + self.half_extent[1] + pad) / (2.0 * self.half_extent[1] + 2.0 * pad).max(f64::EPSILON);
+                let allowed_x = self.half_extent[0] * progress + pad;
+                lx.abs() <= allowed_x
+            }
         }
     }
 
-    /// 렌더링(테셀레이션) 전용 — 이 도형의 outline을 기존 Stroke
-    /// 파이프라인에 태우기 위한 변환. Scene엔 저장 안 되는 임시 값.
     pub fn as_stroke(&self) -> Stroke {
         Stroke {
             points: self.world_outline().into_iter().map(|pos| PenPoint { pos, pressure: 1.0 }).collect(),
@@ -188,7 +187,6 @@ impl CanvasItem {
         }
     }
 
-    /// 정밀 히트테스트 (Broad Phase -> Narrow Phase)
     pub fn hit_test(&self, point: [f64; 2], radius: f64) -> bool {
         let (min, max) = self.bounding_box();
         if point[0] < min[0] - radius || point[0] > max[0] + radius ||
@@ -215,13 +213,10 @@ impl CanvasItem {
                 false
             }
             CanvasItem::Shape(sh) => sh.hit_test_local(point, radius),
-            // 이미지/텍스트는 bbox 통과 = 히트(선택 시 관대한 클릭 영역이
-            // 오히려 UX상 자연스러움).
             CanvasItem::Image(_) | CanvasItem::Text(_) => true,
         }
     }
 
-    /// 이동 — 종류 상관없이 delta만큼 평행이동.
     pub fn translate(&mut self, delta: [f64; 2]) {
         match self {
             CanvasItem::Stroke(s) => {
@@ -234,6 +229,7 @@ impl CanvasItem {
             CanvasItem::Image(img) => {
                 img.top_left[0] += delta[0];
                 img.top_left[1] += delta[1];
+                img.mesh_dirty = true; // 변경 알림
             }
             CanvasItem::Shape(sh) => {
                 sh.center[0] += delta[0];

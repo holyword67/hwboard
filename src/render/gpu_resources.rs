@@ -25,9 +25,6 @@ pub struct ImageGpuResource {
 
 pub struct GpuResourceRegistry {
     strokes: HashMap<ItemId, StrokeGpuResource>,
-    /// Shape도 렌더링 시점엔 outline을 Stroke로 변환해서 같은 방식으로
-    /// 테셀레이션/캐싱함(Shape::as_stroke 참고) — 그래서 타입도
-    /// StrokeGpuResource 그대로 재사용.
     shapes: HashMap<ItemId, StrokeGpuResource>,
     images: HashMap<ItemId, ImageGpuResource>,
 }
@@ -43,7 +40,8 @@ impl GpuResourceRegistry {
         let mut seen_images: HashSet<ItemId> = HashSet::new();
         let mut strokes_to_build: Vec<ItemId> = Vec::new();
         let mut shapes_to_build: Vec<ItemId> = Vec::new();
-        let mut images_to_build: Vec<ItemId> = Vec::new();
+        let mut images_to_create: Vec<ItemId> = Vec::new();
+        let mut images_to_update: Vec<ItemId> = Vec::new(); // 텍스처 재활용, 크기/위치만 갱신
 
         for (id, item) in scene.iter_ordered_with_id() {
             match item {
@@ -59,10 +57,12 @@ impl GpuResourceRegistry {
                         shapes_to_build.push(id);
                     }
                 }
-                CanvasItem::Image(_) => {
+                CanvasItem::Image(img) => {
                     seen_images.insert(id);
                     if !self.images.contains_key(&id) {
-                        images_to_build.push(id);
+                        images_to_create.push(id);
+                    } else if img.mesh_dirty {
+                        images_to_update.push(id);
                     }
                 }
                 _ => {}
@@ -97,9 +97,6 @@ impl GpuResourceRegistry {
             scene.mark_stroke_clean(id);
         }
 
-        // Shape도 스트로크와 완전히 같은 절차 — outline을 as_stroke()로
-        // 뽑아서 그대로 tessellate_stroke에 태움(시각 결과는 예전에
-        // Stroke로 커밋되던 도형과 동일, 데이터 모델만 바뀐 것).
         for id in shapes_to_build {
             let Some(CanvasItem::Shape(sh)) = scene.item(id) else { continue };
             let virtual_stroke = sh.as_stroke();
@@ -129,7 +126,8 @@ impl GpuResourceRegistry {
             scene.mark_shape_clean(id);
         }
 
-        for id in images_to_build {
+        // 이미지 새로 붙여넣어졌을 때 (텍스처 포함 전부 생성)
+        for id in images_to_create {
             let Some(CanvasItem::Image(img)) = scene.item(id) else { continue };
 
             let texture = core.device.create_texture(&wgpu::TextureDescriptor {
@@ -201,6 +199,32 @@ impl GpuResourceRegistry {
             });
 
             self.images.insert(id, ImageGpuResource { bind_group, vertex_buf, index_buf, origin: img.top_left });
+            scene.mark_image_clean(id);
+        }
+
+        // 이미지 크기/위치만 바뀌었을 때 (텍스처는 놔두고 Vertex 사이즈만 갱신)
+        for id in images_to_update {
+            let Some(CanvasItem::Image(img)) = scene.item(id) else { continue };
+            
+            let (w, h) = (img.size[0] as f32, img.size[1] as f32);
+            let verts = [
+                ImageVertex { pos: [0.0, 0.0], uv: [0.0, 0.0] },
+                ImageVertex { pos: [w, 0.0], uv: [1.0, 0.0] },
+                ImageVertex { pos: [0.0, h], uv: [0.0, 1.0] },
+                ImageVertex { pos: [w, h], uv: [1.0, 1.0] },
+            ];
+            
+            let vertex_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("image_vertex_buf_update"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            if let Some(res) = self.images.get_mut(&id) {
+                res.vertex_buf = vertex_buf;
+                res.origin = img.top_left;
+            }
+            scene.mark_image_clean(id);
         }
 
         self.strokes.retain(|id, _| seen_strokes.contains(id));

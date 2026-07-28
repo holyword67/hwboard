@@ -109,7 +109,14 @@ pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
 
     // v_count==5(4개 꼭짓점+닫는 점)면 사각형, 그 외(원래 삼각형 후보인
     // v_count==4 포함)는 전부 원으로 분류.
-    let kind = if v_count == 5 { ShapeKind::Rectangle } else { ShapeKind::Circle };
+    // 수정, 5점(꼭짓점 4개+닫는 점)은 사각형, 4점(꼭짓점 3개+닫는 점)은 삼각형, 나머진 원
+    let kind = if v_count == 5 {
+        ShapeKind::Rectangle
+    } else if v_count == 4 {
+        ShapeKind::Triangle
+    } else {
+        ShapeKind::Circle
+    };
 
     let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
     let half_extent = [(max[0] - min[0]) * 0.5, (max[1] - min[1]) * 0.5];

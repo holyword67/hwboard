@@ -84,6 +84,13 @@ impl Scene {
             s.mesh_dirty = false;
         }
     }
+
+    /// GpuResourceRegistry가 이미지의 크기/위치를 갱신한 뒤 dirty 플래그를 끄는 데 씀.
+    pub fn mark_image_clean(&mut self, id: ItemId) {
+        if let Some(CanvasItem::Image(img)) = self.items.get_mut(&id) {
+            img.mesh_dirty = false;
+        }
+    }    
 }
 
 pub struct UndoStack {
