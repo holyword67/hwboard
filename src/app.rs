@@ -6,7 +6,7 @@
 
 use crate::clipboard::read_clipboard_image_bytes;
 use crate::gpu::core::GpuCore;
-use crate::input::{InputEvent, InputState, PointerEvent};
+use crate::input::{InputEvent, InputState, PointerEvent, PointerSource};
 use crate::render::camera::Camera;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
@@ -48,9 +48,11 @@ pub struct App {
     pen_color: [f32; 4],
     drawing_stroke: Option<Stroke>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
-    /// UI 버튼을 누르는 동안 캔버스 그리기/지우기 로직이 반응하지
-    /// 않도록 하는 플래그. Down이 UI를 맞히면 true, Up에서 false.
     pointer_captured_by_ui: bool,
+    /// 마우스 좌클릭 드래그 = 팬(캔버스 이동). 펜은 이 상태와 무관하게
+    /// 항상 그리기/지우기.
+    panning: bool,
+    last_pan_pos: [f32; 2],
     is_fullscreen: bool,
     open: bool,
 }
@@ -79,6 +81,7 @@ impl App {
             pointer_captured_by_ui: false,
             is_fullscreen: false,
             open: true,
+            panning: false, last_pan_pos: [0.0, 0.0],
         }
     }
 
@@ -149,7 +152,7 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
         };
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
-        let cursor_world = self.camera.screen_to_world(self.input.last_known_pos());
+        let cursor_world = self.camera.screen_to_world(self.input.last_mouse_pos());
         let top_left = [cursor_world[0] - w as f64 / 2.0, cursor_world[1] - h as f64 / 2.0];
 
         let id = self.scene.alloc_id();
@@ -185,11 +188,8 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
     }
 
     fn handle_pointer(&mut self, ev: PointerEvent) {
-        // UI 버튼 히트테스트가 캔버스 그리기/지우기보다 항상 먼저 —
-        // Down이 버튼을 맞히면 여기서 소비하고 끝. 버튼 누른 채로 캔버스
-        // 쪽으로 드래그하는 엣지케이스(예: 버튼 누르고 안 떼고 캔버스로
-        // 이동)는 지금 pointer_captured_by_ui로 막아두긴 했는데, 실제
-        // 사용성 확인 전까진 미검증.
+        // UI 버튼 히트테스트가 항상 먼저 — 소스(펜/마우스) 상관없이 클릭
+        // 이면 다 잡음.
         if let PointerEvent::Down(s) = ev {
             if let Some(action) = ui::hit_test(s.pos, self.camera.viewport_size, self.tool, self.pen_color) {
                 self.pointer_captured_by_ui = true;
@@ -207,6 +207,32 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
             return;
         }
 
+        match ev.sample().source {
+            PointerSource::Mouse => self.handle_mouse_pointer(ev),
+            PointerSource::Pen => self.handle_pen_pointer(ev),
+        }
+    }
+
+    /// 마우스 좌클릭 드래그 = 팬. 그리기/지우기는 관여하지 않음.
+    fn handle_mouse_pointer(&mut self, ev: PointerEvent) {
+        match ev {
+            PointerEvent::Down(s) => {
+                self.panning = true;
+                self.last_pan_pos = s.pos;
+            }
+            PointerEvent::Move(s) => {
+                if self.panning {
+                    let delta = [s.pos[0] - self.last_pan_pos[0], s.pos[1] - self.last_pan_pos[1]];
+                    self.camera.pan_by_screen_delta(delta);
+                    self.last_pan_pos = s.pos;
+                }
+            }
+            PointerEvent::Up(_) => self.panning = false,
+            PointerEvent::Hold(_) => {}
+        }
+    }
+
+    fn handle_pen_pointer(&mut self, ev: PointerEvent) {
         match (self.tool, ev) {
             (Tool::Pen, PointerEvent::Down(s)) => {
                 let world = self.camera.screen_to_world(s.pos);

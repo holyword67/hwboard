@@ -5,17 +5,14 @@
 // 변환한다.
 //
 // 핵심 설계 포인트:
-// 1. SDL3에서 pressure는 PenMotion에 안 실려 오고 별도의 PenAxis 이벤트로
-//    옴 — 최신 pressure 값을 캐시해뒀다가 위치 이벤트에 합성한다.
-// 2. 마우스도 동일한 PointerEvent로 통일 — pressure는 1.0 고정.
-// 3. Hold(도형 자동스냅 트리거)는 이벤트가 아니라 매 프레임 폴링
-//    (update)으로 감지 — SDL은 "안 움직이면 이벤트 자체가 안 옴".
-// 4. 좌표는 스크린(윈도우 픽셀) 좌표 그대로 낸다. world 좌표 변환은
-//    호출 측(app 레이어)이 camera를 통해 처리.
-// 5. 펜 barrel 버튼(PenButtonDown/Up)은 위치 정보가 없는 별개의
-//    "동작 트리거"라 PointerEvent에 안 섞고 InputEvent::PenButton으로
-//    분리. 버튼 번호(1/2)가 실제 하드웨어에서 뭘로 찍히는지는 아직
-//    검증 안 됨 — PEN_BUTTON_UNDO/REDO 상수만 바꾸면 재배정 가능.
+// 1. pressure는 PenMotion이 아니라 별도 PenAxis 이벤트로 옴 — 캐시해뒀다가
+//    위치 이벤트에 합성.
+// 2. 마우스/펜을 같은 PointerEvent 스트림으로 통일하되, source 필드로
+//    구분 가능하게 함 — App이 "펜=그리기, 마우스=팬"으로 분기하는 데 씀.
+// 3. Hold(도형 자동스냅)는 매 프레임 폴링(update)으로 감지.
+// 4. 좌표는 스크린 좌표 그대로 냄, world 변환은 camera가 담당.
+// 5. 마우스 위치와 펜 위치는 서로 다른 필드로 따로 추적 — 어느 소스가
+//    최근에 움직였는지에 좌우되지 않게.
 
 use sdl3::event::Event;
 use sdl3::mouse::MouseButton;
@@ -26,19 +23,21 @@ use std::time::{Duration, Instant};
 const HOLD_DURATION: Duration = Duration::from_millis(400);
 const MOVE_JITTER_PX: f32 = 3.0;
 
-/// SDL은 펜 입력이 들어오면 호환성을 위해 "이 펜 입력을 흉내 낸 가짜
-/// 마우스 이벤트"도 같이 쏴줌 — which 필드가 이 값이면 진짜 마우스가
-/// 아니라 펜에서 합성된 이벤트. 이걸 안 걸러내면 PenMotion 스트림이랑
-/// 가짜 MouseMotion 스트림이 같은 스트로크에 섞여서 좌표가 튀는 버그가
-/// 생김 (실제로 겪은 버그).
 fn is_pen_synthesized(which: u32) -> bool {
     which == SDL_PEN_MOUSEID.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerSource {
+    Mouse,
+    Pen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InputSample {
     pub pos: [f32; 2],
     pub pressure: f32,
+    pub source: PointerSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,6 +46,17 @@ pub enum PointerEvent {
     Move(InputSample),
     Up(InputSample),
     Hold(InputSample),
+}
+
+impl PointerEvent {
+    pub fn sample(&self) -> InputSample {
+        match self {
+            PointerEvent::Down(s)
+            | PointerEvent::Move(s)
+            | PointerEvent::Up(s)
+            | PointerEvent::Hold(s) => *s,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,13 +68,12 @@ pub enum InputEvent {
 pub struct InputState {
     last_pressure: f32,
     pointer_down: bool,
+    active_source: PointerSource,
     last_significant_pos: [f32; 2],
     last_move_at: Instant,
     hold_fired: bool,
-    /// 그리는 중이 아니어도 항상 최신값으로 유지 — Ctrl+V 붙여넣기
-    /// 위치 결정용(펜/마우스 눌림과 무관하게 "지금 커서가 어디 있나"가
-    /// 필요해서 pointer_down 게이트 없이 갱신).
-    last_known_pos: [f32; 2],
+    last_mouse_pos: [f32; 2],
+    last_pen_pos: [f32; 2],
 }
 
 impl InputState {
@@ -72,15 +81,21 @@ impl InputState {
         Self {
             last_pressure: 1.0,
             pointer_down: false,
+            active_source: PointerSource::Mouse,
             last_significant_pos: [0.0, 0.0],
             last_move_at: Instant::now(),
             hold_fired: false,
-            last_known_pos: [0.0, 0.0],
+            last_mouse_pos: [0.0, 0.0],
+            last_pen_pos: [0.0, 0.0],
         }
     }
 
-    pub fn last_known_pos(&self) -> [f32; 2] {
-        self.last_known_pos
+    pub fn last_mouse_pos(&self) -> [f32; 2] {
+        self.last_mouse_pos
+    }
+
+    pub fn last_pen_pos(&self) -> [f32; 2] {
+        self.last_pen_pos
     }
 
     pub fn process_event(&mut self, event: &Event) -> Option<InputEvent> {
@@ -92,36 +107,32 @@ impl InputState {
                 None
             }
             Event::PenDown { x, y, .. } => {
-                Some(InputEvent::Pointer(self.begin(*x, *y, self.last_pressure)))
+                self.last_pen_pos = [*x, *y];
+                Some(InputEvent::Pointer(self.begin(*x, *y, self.last_pressure, PointerSource::Pen)))
             }
             Event::PenMotion { x, y, .. } => {
-                self.last_known_pos = [*x, *y];
-                self.moved(*x, *y, self.last_pressure).map(InputEvent::Pointer)
+                self.last_pen_pos = [*x, *y];
+                self.moved(*x, *y, self.last_pressure, PointerSource::Pen).map(InputEvent::Pointer)
             }
             Event::PenUp { x, y, .. } => {
-                Some(InputEvent::Pointer(self.end(*x, *y, self.last_pressure)))
+                self.last_pen_pos = [*x, *y];
+                Some(InputEvent::Pointer(self.end(*x, *y, self.last_pressure, PointerSource::Pen)))
             }
-
 
             Event::MouseButtonDown { mouse_btn: MouseButton::Left, which, x, y, .. } => {
                 if is_pen_synthesized(*which) {
-                    return None; // 펜이 이미 PenDown으로 처리됨 — 중복 무시
+                    return None;
                 }
-                Some(InputEvent::Pointer(self.begin(*x, *y, 1.0)))
-            }
-            Event::MouseButtonDown { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
-                Some(InputEvent::MouseSideButton { button: *btn, pressed: true })
-            }
-            Event::MouseButtonUp { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
-                Some(InputEvent::MouseSideButton { button: *btn, pressed: false })
+                self.last_mouse_pos = [*x, *y];
+                Some(InputEvent::Pointer(self.begin(*x, *y, 1.0, PointerSource::Mouse)))
             }
             Event::MouseMotion { which, x, y, .. } => {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
-                self.last_known_pos = [*x, *y];
-                if self.pointer_down {
-                    self.moved(*x, *y, 1.0).map(InputEvent::Pointer)
+                self.last_mouse_pos = [*x, *y];
+                if self.pointer_down && self.active_source == PointerSource::Mouse {
+                    self.moved(*x, *y, 1.0, PointerSource::Mouse).map(InputEvent::Pointer)
                 } else {
                     None
                 }
@@ -130,7 +141,15 @@ impl InputState {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
-                Some(InputEvent::Pointer(self.end(*x, *y, 1.0)))
+                self.last_mouse_pos = [*x, *y];
+                Some(InputEvent::Pointer(self.end(*x, *y, 1.0, PointerSource::Mouse)))
+            }
+
+            Event::MouseButtonDown { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
+                Some(InputEvent::MouseSideButton { button: *btn, pressed: true })
+            }
+            Event::MouseButtonUp { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
+                Some(InputEvent::MouseSideButton { button: *btn, pressed: false })
             }
             _ => None,
         }
@@ -145,20 +164,22 @@ impl InputState {
             return Some(InputEvent::Pointer(PointerEvent::Hold(InputSample {
                 pos: self.last_significant_pos,
                 pressure: self.last_pressure,
+                source: self.active_source,
             })));
         }
         None
     }
 
-    fn begin(&mut self, x: f32, y: f32, pressure: f32) -> PointerEvent {
+    fn begin(&mut self, x: f32, y: f32, pressure: f32, source: PointerSource) -> PointerEvent {
         self.pointer_down = true;
+        self.active_source = source;
         self.hold_fired = false;
         self.last_significant_pos = [x, y];
         self.last_move_at = Instant::now();
-        PointerEvent::Down(InputSample { pos: [x, y], pressure })
+        PointerEvent::Down(InputSample { pos: [x, y], pressure, source })
     }
 
-    fn moved(&mut self, x: f32, y: f32, pressure: f32) -> Option<PointerEvent> {
+    fn moved(&mut self, x: f32, y: f32, pressure: f32, source: PointerSource) -> Option<PointerEvent> {
         let dx = x - self.last_significant_pos[0];
         let dy = y - self.last_significant_pos[1];
         if (dx * dx + dy * dy).sqrt() > MOVE_JITTER_PX {
@@ -166,11 +187,11 @@ impl InputState {
             self.last_move_at = Instant::now();
             self.hold_fired = false;
         }
-        Some(PointerEvent::Move(InputSample { pos: [x, y], pressure }))
+        Some(PointerEvent::Move(InputSample { pos: [x, y], pressure, source }))
     }
 
-    fn end(&mut self, x: f32, y: f32, pressure: f32) -> PointerEvent {
+    fn end(&mut self, x: f32, y: f32, pressure: f32, source: PointerSource) -> PointerEvent {
         self.pointer_down = false;
-        PointerEvent::Up(InputSample { pos: [x, y], pressure })
+        PointerEvent::Up(InputSample { pos: [x, y], pressure, source })
     }
 }
