@@ -18,6 +18,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     UiAction::SelectColor(c) => self.pen_color = c,
                     UiAction::SelectThickness(w) => self.pen_width = w,
                 }
+                self.ui_dirty = true; // 도구함 재조립 필요(도구/색/두께 변경)
                 return;
             }
         }

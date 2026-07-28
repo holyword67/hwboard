@@ -21,6 +21,7 @@ use sdl3::keyboard::{Keycode, Mod};
 use sdl3::video::Window;
 use std::time::Instant;
 
+use render::UiCache;
 use select::SelectDrag;
 use shapes::SnapData;
 
@@ -67,6 +68,8 @@ pub struct App {
     msaa_texture_view: wgpu::TextureView,
     dirty: bool,
     has_focus: bool,
+    ui_dirty: bool,
+    ui_cache: Option<UiCache>,
 }
 
 impl App {
@@ -104,6 +107,8 @@ impl App {
             msaa_texture_view,
             dirty: true,
             has_focus: true,
+            ui_dirty: true,
+            ui_cache: None,
         }
     }
 
@@ -136,6 +141,7 @@ impl App {
                 self.core.resize(*w as u32, *h as u32);
                 self.camera.resize([*w as f32, *h as f32]);
                 self.msaa_texture_view = create_msaa_texture_view(&self.core.device, &self.core.config);
+                self.ui_dirty = true; // 도구함 레이아웃이 뷰포트 크기에 의존함
             }
             Event::Window { win_event: sdl3::event::WindowEvent::FocusGained, .. } => {
                 self.has_focus = true;

@@ -16,6 +16,20 @@ const ERASER_INDICATOR_COLOR: [f32; 4] = [0.2, 0.2, 0.2, 0.6];
 const SELECTION_LINE_WIDTH: f32 = 1.5;
 const SELECTION_COLOR: [f32; 4] = [0.1, 0.4, 0.9, 0.9];
 
+/// 도구함(버튼/팔레트/두께바) 캐시 — tool/color/thickness/뷰포트 크기가
+/// 바뀔 때(ui_dirty)만 재조립. 지우개 커서/선택 핸들은 이 캐시를 전혀
+/// 모름 — 매 프레임 그대로 즉석 생성(격리된 시스템, 서로 참조 없음).
+pub(super) struct UiCache {
+    vertex_buf: wgpu::Buffer,
+    entries: Vec<UiDrawEntry>,
+}
+
+struct UiDrawEntry {
+    start: u32,
+    count: u32,
+    color: [f32; 4],
+}
+
 impl App {
     pub fn render_if_needed(&mut self) {
         if self.dirty && self.has_focus {
@@ -25,6 +39,10 @@ impl App {
     }
 
     pub fn render(&mut self) {
+        if self.ui_dirty || self.ui_cache.is_none() {
+            self.build_ui_cache();
+        }
+
         let uniforms = GlobalUniforms {
             zoom: self.camera.zoom,
             viewport_w: self.camera.viewport_size[0],
@@ -198,32 +216,22 @@ impl App {
             }
 
             // UI 오버레이 — 캔버스 다음에 그려서 항상 위에 보이게.
+            // 도구함(버튼/팔레트/두께바)은 ui_cache에서 그대로 재생 —
+            // build_ui_cache가 위에서 필요할 때만 이미 재조립해뒀음.
             pass.set_pipeline(&self.ui_pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
 
-            let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color, self.pen_width);
-            for b in &buttons {
-                match b.kind {
-                    ui::ButtonKind::Color(c) => {
-                        draw_ui_quad(&self.core.device, &mut pass, b.rect, c);
-                        if b.selected {
-                            // 선택된 색상 위에 역삼각형 마커 표시
-                            let cx = b.rect.x + b.rect.w * 0.5;
-                            let cy = b.rect.y - 6.0;
-                            draw_ui_triangle_inverted(&self.core.device, &mut pass, [cx, cy], 8.0, c);
-                        }
-                    }
-                    ui::ButtonKind::ThicknessBar { selected_index } => {
-                        draw_thickness_bar(&self.core.device, &mut pass, b.rect, selected_index, self.pen_color);
-                    }
-                    ui::ButtonKind::Tool(tool) => {
-                        // 선택되면 컬러, 아니면 회색
-                        let color = if b.selected { self.pen_color } else { [0.6, 0.6, 0.6, 1.0] };
-                        draw_tool_icon(&self.core.device, &mut pass, tool, b.rect, color);
-                    }
+            if let Some(cache) = &self.ui_cache {
+                pass.set_vertex_buffer(0, cache.vertex_buf.slice(..));
+                for e in &cache.entries {
+                    let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color: e.color };
+                    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                    pass.draw(e.start..e.start + e.count, 0..1);
                 }
             }
 
+            // 지우개 커서/선택 핸들 — 도구함 캐시와 완전히 독립. 마우스를
+            // 따라 매 프레임 바뀌므로 캐싱 대상이 아님(즉석 생성 유지).
             if self.tool == Tool::Eraser {
                 draw_eraser_indicator(
                     &self.core.device,
@@ -244,6 +252,255 @@ impl App {
 
         self.core.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+    }
+
+    /// 도구함(버튼/팔레트/두께바) 정점을 하나의 버퍼로 통째로 재조립.
+    /// ui_dirty일 때만 호출 — 지우개 커서/선택 핸들은 이 함수와 완전히
+    /// 무관(각각 draw_eraser_indicator/draw_selection_overlay가 별도 처리).
+    fn build_ui_cache(&mut self) {
+        let mut vertices: Vec<Vertex> = Vec::new();
+        let mut entries: Vec<UiDrawEntry> = Vec::new();
+
+        let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color, self.pen_width);
+        for b in &buttons {
+            match b.kind {
+                ui::ButtonKind::Color(c) => {
+                    push_quad(&mut vertices, &mut entries, b.rect, c);
+                    if b.selected {
+                        let cx = b.rect.x + b.rect.w * 0.5;
+                        let cy = b.rect.y - 6.0;
+                        push_triangle_inverted(&mut vertices, &mut entries, [cx, cy], 8.0, c);
+                    }
+                }
+                ui::ButtonKind::ThicknessBar { selected_index } => {
+                    push_thickness_bar(&mut vertices, &mut entries, b.rect, selected_index, self.pen_color);
+                }
+                ui::ButtonKind::Tool(tool) => {
+                    let color = if b.selected { self.pen_color } else { [0.6, 0.6, 0.6, 1.0] };
+                    push_tool_icon(&mut vertices, &mut entries, tool, b.rect, color);
+                }
+            }
+        }
+
+        let vertex_buf = self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui_cache_vertex_buf"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        self.ui_cache = Some(UiCache { vertex_buf, entries });
+        self.ui_dirty = false;
+    }
+}
+
+/// 아래 push_* 함수들은 즉석 draw 대신 vertices/entries에 데이터만
+/// 쌓는다 — draw_* 계열(즉석 생성)과 이름으로 구분해서 혼동 방지.
+fn push_quad(vertices: &mut Vec<Vertex>, entries: &mut Vec<UiDrawEntry>, rect: ui::Rect, color: [f32; 4]) {
+    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    let start = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Vertex { pos: [x0, y0] },
+        Vertex { pos: [x1, y0] },
+        Vertex { pos: [x0, y1] },
+        Vertex { pos: [x1, y0] },
+        Vertex { pos: [x1, y1] },
+        Vertex { pos: [x0, y1] },
+    ]);
+    entries.push(UiDrawEntry { start, count: 6, color });
+}
+
+fn push_line_segment(
+    vertices: &mut Vec<Vertex>,
+    entries: &mut Vec<UiDrawEntry>,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    width: f32,
+    color: [f32; 4],
+) {
+    let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+    let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+    if len < f32::EPSILON {
+        return;
+    }
+    let normal = [-dir[1] / len, dir[0] / len];
+    let hw = width * 0.5;
+
+    let start = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Vertex { pos: [p0[0] + normal[0] * hw, p0[1] + normal[1] * hw] },
+        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] - normal[0] * hw, p1[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+    ]);
+    entries.push(UiDrawEntry { start, count: 6, color });
+}
+
+fn push_triangle_inverted(
+    vertices: &mut Vec<Vertex>,
+    entries: &mut Vec<UiDrawEntry>,
+    center: [f32; 2],
+    size: f32,
+    color: [f32; 4],
+) {
+    let hw = size * 0.73;
+    let start = vertices.len() as u32;
+    vertices.extend_from_slice(&[
+        Vertex { pos: [center[0] - hw, center[1] - hw] },
+        Vertex { pos: [center[0] + hw, center[1] - hw] },
+        Vertex { pos: [center[0], center[1] + hw] },
+    ]);
+    entries.push(UiDrawEntry { start, count: 3, color });
+}
+
+fn push_tool_icon(
+    vertices: &mut Vec<Vertex>,
+    entries: &mut Vec<UiDrawEntry>,
+    tool: Tool,
+    rect: ui::Rect,
+    color: [f32; 4],
+) {
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    let s = rect.w * 0.45;
+    let w = 1.5;
+
+    match tool {
+        Tool::Pen => {
+            let rotate = |x: f32, y: f32| -> [f32; 2] {
+                let angle = std::f32::consts::FRAC_PI_4;
+                let rx = x * angle.cos() - y * angle.sin();
+                let ry = x * angle.sin() + y * angle.cos();
+                [cx + rx, cy + ry]
+            };
+
+            let pw = s * 0.4;
+            let ph = s * 0.8;
+            let pt = s * 1.3;
+
+            let tl = rotate(-pw, -ph);
+            let tr = rotate(pw, -ph);
+            let bl = rotate(-pw, ph);
+            let br = rotate(pw, ph);
+            let tip = rotate(0.0, pt);
+
+            push_line_segment(vertices, entries, tl, tr, w, color);
+            push_line_segment(vertices, entries, tl, bl, w, color);
+            push_line_segment(vertices, entries, tr, br, w, color);
+            push_line_segment(vertices, entries, bl, br, w, color);
+            push_line_segment(vertices, entries, bl, tip, w, color);
+            push_line_segment(vertices, entries, br, tip, w, color);
+        }
+        Tool::Eraser => {
+            let ew = s * 0.5;
+            let eh_top = s * 0.6;
+            let eh_bot = s * 0.3;
+
+            let tl = [cx - ew, cy - eh_top];
+            let tr = [cx + ew, cy - eh_top];
+            let bl = [cx - ew, cy + eh_bot - eh_bot * 0.5];
+            let br = [cx + ew, cy + eh_bot - eh_bot * 0.5];
+
+            push_line_segment(vertices, entries, tl, tr, w, color);
+            push_line_segment(vertices, entries, tl, bl, w, color);
+            push_line_segment(vertices, entries, tr, br, w, color);
+
+            let wrap_w = ew * 1.1;
+            let wrap_tl = [cx - wrap_w, cy + eh_bot - eh_bot * 0.5];
+            let wrap_tr = [cx + wrap_w, cy + eh_bot - eh_bot * 0.5];
+            let wrap_bl = [cx - wrap_w, cy + eh_bot * 1.2];
+            let wrap_br = [cx + wrap_w, cy + eh_bot * 1.2];
+
+            push_line_segment(vertices, entries, wrap_tl, wrap_tr, w, color);
+            push_line_segment(vertices, entries, wrap_bl, wrap_br, w, color);
+            push_line_segment(vertices, entries, wrap_tl, wrap_bl, w, color);
+            push_line_segment(vertices, entries, wrap_tr, wrap_br, w, color);
+        }
+        Tool::Select => {
+            let p0 = [cx - s * 0.4, cy - s * 0.7];
+            let p1 = [cx + s * 0.6, cy + s * 0.4];
+            let p2 = [cx, cy + s * 0.2];
+            let p3 = [cx - s * 0.4, cy + s * 0.8];
+            push_line_segment(vertices, entries, p0, p1, w, color);
+            push_line_segment(vertices, entries, p1, p2, w, color);
+            push_line_segment(vertices, entries, p2, p3, w, color);
+            push_line_segment(vertices, entries, p3, p0, w, color);
+        }
+    }
+}
+
+fn push_thickness_bar(
+    vertices: &mut Vec<Vertex>,
+    entries: &mut Vec<UiDrawEntry>,
+    rect: ui::Rect,
+    selected_index: usize,
+    fill_color: [f32; 4],
+) {
+    let x0 = rect.x;
+    let total_w = rect.w;
+    let cy = rect.y + rect.h * 0.5;
+    let max_r = rect.h * 0.5;
+
+    let min_r = max_r * 0.15;
+
+    let get_r = |x: f32| -> f32 {
+        let cx = x0 + total_w - max_r;
+        if x <= cx {
+            let t = (x - x0) / (cx - x0).max(0.001);
+            min_r + t * (max_r - min_r)
+        } else {
+            let dx = x - cx;
+            if dx >= max_r { 0.0 } else { (max_r * max_r - dx * dx).sqrt() }
+        }
+    };
+
+    let step = total_w / 5.0;
+
+    // 1. 선택된 구간 색 채우기 — 한 entry로 통째 등록.
+    let start_x = x0 + selected_index as f32 * step;
+    let end_x = x0 + (selected_index + 1) as f32 * step;
+    let slices = 15;
+    let start = vertices.len() as u32;
+    for i in 0..slices {
+        let x_a = start_x + (i as f32 / slices as f32) * step;
+        let x_b = start_x + ((i + 1) as f32 / slices as f32) * step;
+        let ra = get_r(x_a);
+        let rb = get_r(x_b);
+        vertices.push(Vertex { pos: [x_a, cy - ra] });
+        vertices.push(Vertex { pos: [x_b, cy - rb] });
+        vertices.push(Vertex { pos: [x_b, cy + rb] });
+        vertices.push(Vertex { pos: [x_a, cy - ra] });
+        vertices.push(Vertex { pos: [x_b, cy + rb] });
+        vertices.push(Vertex { pos: [x_a, cy + ra] });
+    }
+    let _ = end_x; // 원본 로직 유지(참고용 변수, 원본도 미사용)
+    let count = vertices.len() as u32 - start;
+    if count > 0 {
+        entries.push(UiDrawEntry { start, count, color: fill_color });
+    }
+
+    // 2. 외곽선(검은색)
+    let outline_color = [0.1, 0.1, 0.1, 1.0];
+    let outline_w = 1.0;
+
+    push_line_segment(vertices, entries, [x0, cy - min_r], [x0, cy + min_r], outline_w, outline_color);
+
+    let total_slices = 40;
+    for i in 0..total_slices {
+        let x_a = x0 + (i as f32 / total_slices as f32) * total_w;
+        let x_b = x0 + ((i + 1) as f32 / total_slices as f32) * total_w;
+        let ra = get_r(x_a);
+        let rb = get_r(x_b);
+        push_line_segment(vertices, entries, [x_a, cy - ra], [x_b, cy - rb], outline_w, outline_color);
+        push_line_segment(vertices, entries, [x_a, cy + ra], [x_b, cy + rb], outline_w, outline_color);
+    }
+
+    // 3. 5등분 구분선
+    for i in 1..5 {
+        let lx = x0 + i as f32 * step;
+        let r = get_r(lx);
+        push_line_segment(vertices, entries, [lx, cy - r], [lx, cy + r], outline_w, outline_color);
     }
 }
 
@@ -389,7 +646,6 @@ fn draw_selection_overlay(
     }
 }
 
-
 fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], radius: f32, color: [f32; 4]) {
     let segments = 16;
     let mut verts = Vec::with_capacity(segments * 3);
@@ -409,176 +665,4 @@ fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f
     pass.set_immediates(0, bytemuck::bytes_of(&immediate));
     pass.set_vertex_buffer(0, vbuf.slice(..));
     pass.draw(0..(segments as u32 * 3), 0..1);
-}
-
-fn draw_ui_triangle_inverted(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], size: f32, color: [f32; 4]) {
-    let hw = size * 0.73;
-    let verts = [
-        Vertex { pos: [center[0] - hw, center[1] - hw] }, // Top left
-        Vertex { pos: [center[0] + hw, center[1] - hw] }, // Top right
-        Vertex { pos: [center[0], center[1] + hw] },      // Bottom center
-    ];
-    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("ui_tri_vbuf"),
-        contents: bytemuck::cast_slice(&verts),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let immediate = crate::render::pipeline::DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
-    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-    pass.set_vertex_buffer(0, vbuf.slice(..));
-    pass.draw(0..3, 0..1);
-}
-
-fn draw_tool_icon(device: &wgpu::Device, pass: &mut wgpu::RenderPass, tool: Tool, rect: ui::Rect, color: [f32; 4]) {
-    let cx = rect.x + rect.w * 0.5;
-    let cy = rect.y + rect.h * 0.5;
-    let s = rect.w * 0.45; // 아이콘 크기
-    let w = 1.5; // 선 두께
-    
-    match tool {
-        Tool::Pen => {
-            // 45도 기울어진 귀여운 연필
-            // 로컬 좌표(수직으로 서 있는 연필)를 먼저 정의하고 45도 회전시킵니다.
-            let rotate = |x: f32, y: f32| -> [f32; 2] {
-                let angle = std::f32::consts::FRAC_PI_4; // 45도
-                let rx = x * angle.cos() - y * angle.sin();
-                let ry = x * angle.sin() + y * angle.cos();
-                [cx + rx, cy + ry]
-            };
-
-            let pw = s * 0.4;  // 연필 반폭
-            let ph = s * 0.8;  // 연필 몸통 반길이
-            let pt = s * 1.3;  // 펜촉 끝 길이 (y좌표)
-
-            // 점 5개 정의
-            let tl = rotate(-pw, -ph); // 좌상단
-            let tr = rotate(pw, -ph);  // 우상단
-            let bl = rotate(-pw, ph);  // 좌하단 (몸통 끝)
-            let br = rotate(pw, ph);   // 우하단 (몸통 끝)
-            let tip = rotate(0.0, pt); // 펜촉 끝
-
-            // 연필 그리기
-            draw_screen_line_segment(device, pass, tl, tr, w, color); // 윗면 (지우개쪽)
-            draw_screen_line_segment(device, pass, tl, bl, w, color); // 왼쪽 몸통
-            draw_screen_line_segment(device, pass, tr, br, w, color); // 오른쪽 몸통
-            draw_screen_line_segment(device, pass, bl, br, w, color); // 몸통과 펜촉 경계
-            draw_screen_line_segment(device, pass, bl, tip, w, color); // 펜촉 왼쪽
-            draw_screen_line_segment(device, pass, br, tip, w, color); // 펜촉 오른쪽
-        }
-        Tool::Eraser => {
-            // 스케치처럼 평범하고 반듯한 지우개 + 아래쪽 종이 껍데기
-            let ew = s * 0.5; // 반폭
-            let eh_top = s * 0.6; // 윗부분(고무) 높이
-            let eh_bot = s * 0.3; // 아랫부분(종이 껍데기) 높이
-
-            // 윗부분(고무)
-            let tl = [cx - ew, cy - eh_top];
-            let tr = [cx + ew, cy - eh_top];
-            let bl = [cx - ew, cy + eh_bot - eh_bot*0.5];
-            let br = [cx + ew, cy + eh_bot - eh_bot*0.5];
-            
-            draw_screen_line_segment(device, pass, tl, tr, w, color); // 윗면
-            draw_screen_line_segment(device, pass, tl, bl, w, color); // 왼쪽 고무
-            draw_screen_line_segment(device, pass, tr, br, w, color); // 오른쪽 고무
-            
-            // 아랫부분(종이 껍데기, 살짝 더 넓게 감싼 형태)
-            let wrap_w = ew * 1.1; 
-            let wrap_tl = [cx - wrap_w, cy + eh_bot - eh_bot*0.5];
-            let wrap_tr = [cx + wrap_w, cy + eh_bot - eh_bot*0.5];
-            let wrap_bl = [cx - wrap_w, cy + eh_bot * 1.2];
-            let wrap_br = [cx + wrap_w, cy + eh_bot * 1.2];
-
-            draw_screen_line_segment(device, pass, wrap_tl, wrap_tr, w, color); // 껍데기 윗선
-            draw_screen_line_segment(device, pass, wrap_bl, wrap_br, w, color); // 껍데기 아랫선
-            draw_screen_line_segment(device, pass, wrap_tl, wrap_bl, w, color); // 껍데기 왼쪽
-            draw_screen_line_segment(device, pass, wrap_tr, wrap_br, w, color); // 껍데기 오른쪽
-        }
-        Tool::Select => {
-            // 마우스 화살표
-            let p0 = [cx - s*0.4, cy - s*0.7]; 
-            let p1 = [cx + s*0.6, cy + s*0.4]; 
-            let p2 = [cx, cy + s*0.2];         
-            let p3 = [cx - s*0.4, cy + s*0.8]; 
-            draw_screen_line_segment(device, pass, p0, p1, w, color);
-            draw_screen_line_segment(device, pass, p1, p2, w, color);
-            draw_screen_line_segment(device, pass, p2, p3, w, color);
-            draw_screen_line_segment(device, pass, p3, p0, w, color);
-        }
-    }
-}
-
-fn draw_thickness_bar(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Rect, selected_index: usize, fill_color: [f32; 4]) {
-    let x0 = rect.x;
-    let total_w = rect.w;
-    let cy = rect.y + rect.h * 0.5;
-    let max_r = rect.h * 0.5;
-    
-    // 바늘처럼 뾰족하지 않게, 왼쪽 시작점의 최소 두께(반지름) 설정
-    let min_r = max_r * 0.15; 
-    
-    let get_r = |x: f32| -> f32 {
-        let cx = x0 + total_w - max_r; // 오른쪽 반원의 중심
-        if x <= cx {
-            let t = (x - x0) / (cx - x0).max(0.001);
-            min_r + t * (max_r - min_r) // 0.0에서 시작하지 않고 min_r부터 서서히 커짐
-        } else {
-            let dx = x - cx;
-            if dx >= max_r { 0.0 } else { (max_r*max_r - dx*dx).sqrt() }
-        }
-    };
-
-    let step = total_w / 5.0;
-
-    // 1. 선택된 구간 색 채우기
-    let start_x = x0 + selected_index as f32 * step;
-    let end_x = x0 + (selected_index + 1) as f32 * step;
-    let slices = 15;
-    let mut fill_verts = Vec::new();
-    for i in 0..slices {
-        let x_a = start_x + (i as f32 / slices as f32) * step;
-        let x_b = start_x + ((i + 1) as f32 / slices as f32) * step;
-        let ra = get_r(x_a);
-        let rb = get_r(x_b);
-        fill_verts.push(Vertex { pos: [x_a, cy - ra] });
-        fill_verts.push(Vertex { pos: [x_b, cy - rb] });
-        fill_verts.push(Vertex { pos: [x_b, cy + rb] });
-        fill_verts.push(Vertex { pos: [x_a, cy - ra] });
-        fill_verts.push(Vertex { pos: [x_b, cy + rb] });
-        fill_verts.push(Vertex { pos: [x_a, cy + ra] });
-    }
-    if !fill_verts.is_empty() {
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("thickness_fill_vbuf"),
-            contents: bytemuck::cast_slice(&fill_verts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let immediate = crate::render::pipeline::DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color: fill_color };
-        pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-        pass.set_vertex_buffer(0, vbuf.slice(..));
-        pass.draw(0..fill_verts.len() as u32, 0..1);
-    }
-
-    // 2. 외곽선(검은색) 그리기
-    let outline_color = [0.1, 0.1, 0.1, 1.0];
-    let outline_w = 1.0;
-    
-    // 왼쪽 뭉툭하게 막아주는 세로 선 추가
-    draw_screen_line_segment(device, pass, [x0, cy - min_r], [x0, cy + min_r], outline_w, outline_color);
-
-    let total_slices = 40;
-    for i in 0..total_slices {
-        let x_a = x0 + (i as f32 / total_slices as f32) * total_w;
-        let x_b = x0 + ((i + 1) as f32 / total_slices as f32) * total_w;
-        let ra = get_r(x_a);
-        let rb = get_r(x_b);
-        draw_screen_line_segment(device, pass, [x_a, cy - ra], [x_b, cy - rb], outline_w, outline_color); // 윗선
-        draw_screen_line_segment(device, pass, [x_a, cy + ra], [x_b, cy + rb], outline_w, outline_color); // 아랫선
-    }
-
-    // 3. 5등분 구분선 그리기
-    for i in 1..5 {
-        let lx = x0 + i as f32 * step;
-        let r = get_r(lx);
-        draw_screen_line_segment(device, pass, [lx, cy - r], [lx, cy + r], outline_w, outline_color);
-    }
 }
