@@ -98,6 +98,10 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
             Event::KeyDown { keycode: Some(kc), repeat: false, .. } => {
                 self.handle_key(*kc, window)
             }
+            Event::MouseWheel { y, mouse_x, mouse_y, .. } => {
+                let factor = 1.0 + y * 0.1;
+                self.camera.zoom_at([*mouse_x, *mouse_y], factor);
+            }            
             _ => {
                 if let Some(input_event) = self.input.process_event(event) {
                     self.handle_input_event(input_event);
