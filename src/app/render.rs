@@ -412,7 +412,7 @@ fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f
 }
 
 fn draw_ui_triangle_inverted(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], size: f32, color: [f32; 4]) {
-    let hw = size * 0.5;
+    let hw = size * 0.73;
     let verts = [
         Vertex { pos: [center[0] - hw, center[1] - hw] }, // Top left
         Vertex { pos: [center[0] + hw, center[1] - hw] }, // Top right
