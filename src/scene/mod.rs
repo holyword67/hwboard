@@ -58,6 +58,11 @@ impl Scene {
         self.order.iter().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }
 
+    // 👇 [추가] 지우개/마우스 히트테스트용 — Z순서 역순(맨 위에서부터) 순회
+    pub fn iter_ordered_with_id_rev(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
+        self.order.iter().rev().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
+    }    
+
     pub fn item(&self, id: ItemId) -> Option<&CanvasItem> {
         self.items.get(&id)
     }

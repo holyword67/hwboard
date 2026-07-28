@@ -285,16 +285,16 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
         let world = self.camera.screen_to_world(screen_pos);
         let r = ERASER_RADIUS_WORLD;
 
-        let hit = self.scene.iter_ordered_with_id().find_map(|(id, item)| {
+        // [변경됨] .rev()를 추가하여 맨 위(가장 나중에 그려진) 아이템부터 역순 검사.
+        // 이를 통해 겹쳐진 선을 지울 때 아래에 있는 선이 잘못 지워지는 현상 방지.
+        let hit = self.scene.iter_ordered_with_id_rev().find_map(|(id, item)| {
+            // 이미 이번 드래그 세션에 지워진 항목은 무시
             if self.erasing_removed.iter().any(|(rid, _, _)| *rid == id) {
                 return None;
             }
-            let (min, max) = item.bounding_box();
-            let inside = world[0] >= min[0] - r
-                && world[0] <= max[0] + r
-                && world[1] >= min[1] - r
-                && world[1] <= max[1] + r;
-            inside.then_some(id)
+            
+            // 정밀 히트테스트 호출
+            item.hit_test(world, r).then_some(id)
         });
 
         if let Some(id) = hit {

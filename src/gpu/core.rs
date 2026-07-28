@@ -22,10 +22,7 @@ pub struct GpuCore {
 impl GpuCore {
     pub async fn new(window: &Window) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            // [이어받음] doxa2가 DX12로 고정했던 걸 그대로 유지 —
-            // Windows 타겟이 이미 전제된 선택이라 새로 정한 게 아님.
-            // 크로스플랫폼 필요해지면 이 부분 재검토 필요.
-            backends: wgpu::Backends::DX12,
+            backends: wgpu::Backends::PRIMARY,
             flags: Default::default(),
             memory_budget_thresholds: Default::default(),
             backend_options: Default::default(),
