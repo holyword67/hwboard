@@ -23,10 +23,14 @@ use std::time::Instant;
 use wgpu::util::DeviceExt;
 
 const PEN_BASE_WIDTH: f32 = 3.0;
-/// [미검증 가설] world 단위 고정 반경 — zoom에 따라 스크린상 크기가
-/// 달라짐(확대하면 지우개가 스크린상 커 보임). 줌 불변으로 할지는
-/// 실제 써보고 판단 필요.
-const ERASER_RADIUS_WORLD: f64 = 8.0;
+/// 스크린 픽셀 기준 고정 반경 — 지울 때마다 camera.zoom으로 world 반경을
+/// 역산한다(zoom_at_time_of_use). 이렇게 하면 확대/축소해도 화면상
+/// 지우개 크기가 항상 동일하게 느껴짐. [가정값] 12px — 체감상 별로면 조정.
+const ERASER_RADIUS_SCREEN_PX: f32 = 12.0;
+/// 지우개 범위 점선 인디케이터 스타일.
+const ERASER_INDICATOR_DASH_COUNT: usize = 16;
+const ERASER_INDICATOR_LINE_WIDTH: f32 = 2.0;
+const ERASER_INDICATOR_COLOR: [f32; 4] = [0.2, 0.2, 0.2, 0.6];
 
 const SAMPLE_COUNT: u32 = 4;
 
@@ -349,12 +353,13 @@ fn handle_pen_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// [단순 구현] bounding box 기준 히트테스트. 스트로크 실제 선과의
-    /// 거리가 아니라 사각형 범위라 정밀하지 않음 — 실사용해보고 부정확함이
-    /// 느껴지면 세그먼트 거리 기반으로 교체 (지금은 가설 단계 최적화 보류).
+    /// 정밀 히트테스트(Broad Phase bbox → Narrow Phase 점-선분 거리,
+    /// `CanvasItem::hit_test` 참고). 반경은 스크린 픽셀 고정값을 매 호출
+    /// 시점 zoom으로 world 단위로 환산해서 넘김 — 확대/축소해도 화면상
+    /// 지우개 크기가 동일하게 느껴지도록.
     fn try_erase_at(&mut self, screen_pos: [f32; 2]) {
         let world = self.camera.screen_to_world(screen_pos);
-        let r = ERASER_RADIUS_WORLD;
+        let r = (ERASER_RADIUS_SCREEN_PX / self.camera.zoom) as f64;
 
         // [변경됨] .rev()를 추가하여 맨 위(가장 나중에 그려진) 아이템부터 역순 검사.
         // 이를 통해 겹쳐진 선을 지울 때 아래에 있는 선이 잘못 지워지는 현상 방지.
@@ -525,6 +530,19 @@ fn handle_pen_pointer(&mut self, ev: PointerEvent) {
                 }
                 draw_ui_quad(&self.core.device, &mut pass, b.rect, b.color);
             }
+
+            // 지우개 범위 인디케이터 — 누르고 있을 때만이 아니라 도구가
+            // Eraser인 동안 항상(호버 중에도) 표시. 스트로크 두께 보정은
+            // 반영하지 않음(대상마다 달라서 커서 하나로 표현 불가, 대략적
+            // 가이드 용도로 충분하다고 판단).
+            if self.tool == Tool::Eraser {
+                draw_eraser_indicator(
+                    &self.core.device,
+                    &mut pass,
+                    self.input.last_pen_pos(),
+                    ERASER_RADIUS_SCREEN_PX,
+                );
+            }
         }
 
         self.core.queue.submit(std::iter::once(encoder.finish()));
@@ -557,7 +575,60 @@ fn draw_ui_quad(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Re
     pass.draw(0..6, 0..1);
 }
 
+/// 스크린 좌표계에서 두 점 사이를 얇은 사각형(quad)으로 잇는다. 카메라
+/// 변환 없는 UI 좌표라 tessellate::connect_quad와 달리 f32 그대로 계산.
+fn draw_screen_line_segment(
+    device: &wgpu::Device,
+    pass: &mut wgpu::RenderPass,
+    p0: [f32; 2],
+    p1: [f32; 2],
+    width: f32,
+    color: [f32; 4],
+) {
+    let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+    let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+    if len < f32::EPSILON {
+        return;
+    }
+    let normal = [-dir[1] / len, dir[0] / len];
+    let hw = width * 0.5;
 
+    let verts = [
+        Vertex { pos: [p0[0] + normal[0] * hw, p0[1] + normal[1] * hw] },
+        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] - normal[0] * hw, p1[1] - normal[1] * hw] },
+        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+    ];
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("eraser_indicator_segment_vbuf"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
+    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+    pass.set_vertex_buffer(0, vbuf.slice(..));
+    pass.draw(0..6, 0..1);
+}
+
+/// 지우개 범위를 점선 원으로 표시. 대시:간격 = 1:1 비율로
+/// ERASER_INDICATOR_DASH_COUNT개 배치.
+fn draw_eraser_indicator(
+    device: &wgpu::Device,
+    pass: &mut wgpu::RenderPass,
+    center: [f32; 2],
+    radius: f32,
+) {
+    let slots = ERASER_INDICATOR_DASH_COUNT * 2; // dash + gap 쌍
+    for i in 0..ERASER_INDICATOR_DASH_COUNT {
+        let a0 = (i * 2) as f32 / slots as f32 * std::f32::consts::TAU;
+        let a1 = (i * 2 + 1) as f32 / slots as f32 * std::f32::consts::TAU;
+        let p0 = [center[0] + radius * a0.cos(), center[1] + radius * a0.sin()];
+        let p1 = [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()];
+        draw_screen_line_segment(device, pass, p0, p1, ERASER_INDICATOR_LINE_WIDTH, ERASER_INDICATOR_COLOR);
+    }
+}
 
 // ============================================================
 // 도형 인식기 (Shape Recognizer)
