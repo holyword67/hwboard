@@ -28,6 +28,8 @@ const PEN_BASE_WIDTH: f32 = 3.0;
 /// 실제 써보고 판단 필요.
 const ERASER_RADIUS_WORLD: f64 = 8.0;
 
+const SAMPLE_COUNT: u32 = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Tool {
     Pen,
@@ -64,11 +66,13 @@ pub struct App {
     is_fullscreen: bool,
     open: bool,
     snap_state: Option<SnapData>,
+    msaa_texture_view: wgpu::TextureView,
 }
 
 impl App {
     pub async fn new(window: &Window) -> Self {
         let core = GpuCore::new(window).await;
+        let msaa_texture_view = create_msaa_texture_view(&core.device, &core.config);
         let pipeline = StrokePipeline::new(&core);
         let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
         let image_pipeline = ImagePipeline::new(&core, &pipeline.global_bgl);
@@ -92,6 +96,7 @@ impl App {
             open: true,
             panning: false, last_pan_pos: [0.0, 0.0],
             snap_state: None,
+            msaa_texture_view
         }
     }
 
@@ -113,6 +118,7 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
             } => {
                 self.core.resize(*w as u32, *h as u32);
                 self.camera.resize([*w as f32, *h as f32]);
+                self.msaa_texture_view = create_msaa_texture_view(&self.core.device, &self.core.config);
             }
             Event::KeyDown { keycode: Some(kc), keymod, repeat: false, .. } => {
                 self.handle_key(*kc, *keymod, window)
@@ -396,8 +402,8 @@ fn handle_pen_pointer(&mut self, ev: PointerEvent) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_texture_view, // 👇 여기에 MSAA 뷰를 넣고
+                    resolve_target: Some(&view),   // 👇 결과를 최종 화면(view)으로 쏩니다
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
@@ -661,4 +667,23 @@ fn recognize_and_snap_shape(stroke: &mut Stroke) -> Option<SnapData> {
         
         return Some(SnapData { center, local_points, initial_pen, is_line: false });
     }
+}
+
+
+fn create_msaa_texture_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("msaa_texture"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
