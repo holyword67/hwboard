@@ -8,7 +8,6 @@ pub enum CanvasItem {
     Stroke(Stroke),
     Image(ImageItem),
     Shape(Shape),
-    Text(TextItem),
 }
 
 #[derive(Debug, Clone)]
@@ -158,14 +157,6 @@ impl Shape {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TextItem {
-    pub top_left: [f64; 2],
-    pub content: String,
-    pub font_size: f32,
-    pub color: [f32; 4],
-}
-
 impl CanvasItem {
     pub fn bounding_box(&self) -> ([f64; 2], [f64; 2]) {
         match self {
@@ -183,7 +174,6 @@ impl CanvasItem {
                 }
                 (min, max)
             }
-            CanvasItem::Text(t) => (t.top_left, t.top_left),
         }
     }
 
@@ -213,7 +203,7 @@ impl CanvasItem {
                 false
             }
             CanvasItem::Shape(sh) => sh.hit_test_local(point, radius),
-            CanvasItem::Image(_) | CanvasItem::Text(_) => true,
+            CanvasItem::Image(_) => true,
         }
     }
 
@@ -235,10 +225,6 @@ impl CanvasItem {
                 sh.center[0] += delta[0];
                 sh.center[1] += delta[1];
                 sh.mesh_dirty = true;
-            }
-            CanvasItem::Text(t) => {
-                t.top_left[0] += delta[0];
-                t.top_left[1] += delta[1];
             }
         }
     }

@@ -138,7 +138,6 @@ impl App {
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(0..6, 0, 0..1);
                     }
-                    CanvasItem::Text(_) => {} // 미구현
                 }
             }
 

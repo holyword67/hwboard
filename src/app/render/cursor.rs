@@ -88,7 +88,7 @@ pub(super) fn draw_selection_overlay(
                 draw_handle_square(device, pass, *c, crate::app::select::HANDLE_SIZE_SCREEN_PX);
             }
         }
-        CanvasItem::Stroke(_) | CanvasItem::Text(_) => {
+        CanvasItem::Stroke(_) => {
             let (min, max) = item.bounding_box();
             let corners_world = [min, [max[0], min[1]], max, [min[0], max[1]]];
             let corners_screen: Vec<[f32; 2]> = corners_world.iter().map(|&c| camera.world_to_screen(c)).collect();
