@@ -15,6 +15,7 @@ const ERASER_INDICATOR_COLOR: [f32; 4] = [0.2, 0.2, 0.2, 0.6];
 
 const SELECTION_LINE_WIDTH: f32 = 1.5;
 const SELECTION_COLOR: [f32; 4] = [0.1, 0.4, 0.9, 0.9];
+const CURSOR_ICON_SIZE_SCREEN_PX: f32 = 22.0;
 
 /// 도구함(버튼/팔레트/두께바) 캐시 — tool/color/thickness/뷰포트 크기가
 /// 바뀔 때(ui_dirty)만 재조립. 지우개 커서/선택 핸들은 이 캐시를 전혀
@@ -247,6 +248,22 @@ impl App {
                         draw_selection_overlay(&self.core.device, &mut pass, &self.camera, item);
                     }
                 }
+            }
+
+            // 커스텀 포인터 커서 — OS 커서 대신 현재 도구 버튼과 같은
+            // 모양+색으로 그림. Pen/Eraser는 펜 위치, Select는 마우스
+            // 위치를 따라감(사용자 확인 사항). 지우개는 기존 점선 원만
+            // 유지하고 별도 아이콘은 안 그림.
+            match self.tool {
+                Tool::Pen => draw_tool_icon_at(
+                    &self.core.device, &mut pass, Tool::Pen,
+                    self.input.last_pen_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.pen_color,
+                ),
+                Tool::Select => draw_tool_icon_at(
+                    &self.core.device, &mut pass, Tool::Select,
+                    self.input.last_mouse_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.pen_color,
+                ),
+                Tool::Eraser => {}
             }
         }
 
@@ -645,6 +662,57 @@ fn draw_selection_overlay(
         }
     }
 }
+
+fn draw_tool_icon_at(
+    device: &wgpu::Device,
+    pass: &mut wgpu::RenderPass,
+    tool: Tool,
+    center: [f32; 2],
+    size: f32,
+    color: [f32; 4],
+) {
+    let cx = center[0];
+    let cy = center[1];
+    let s = size * 0.45;
+    let w = 1.5;
+
+    match tool {
+        Tool::Pen => {
+            let rotate = |x: f32, y: f32| -> [f32; 2] {
+                let angle = std::f32::consts::FRAC_PI_4;
+                let rx = x * angle.cos() - y * angle.sin();
+                let ry = x * angle.sin() + y * angle.cos();
+                [cx + rx, cy + ry]
+            };
+            let pw = s * 0.4;
+            let ph = s * 0.8;
+            let pt = s * 1.3;
+            let tl = rotate(-pw, -ph);
+            let tr = rotate(pw, -ph);
+            let bl = rotate(-pw, ph);
+            let br = rotate(pw, ph);
+            let tip = rotate(0.0, pt);
+            draw_screen_line_segment(device, pass, tl, tr, w, color);
+            draw_screen_line_segment(device, pass, tl, bl, w, color);
+            draw_screen_line_segment(device, pass, tr, br, w, color);
+            draw_screen_line_segment(device, pass, bl, br, w, color);
+            draw_screen_line_segment(device, pass, bl, tip, w, color);
+            draw_screen_line_segment(device, pass, br, tip, w, color);
+        }
+        Tool::Select => {
+            let p0 = [cx - s * 0.4, cy - s * 0.7];
+            let p1 = [cx + s * 0.6, cy + s * 0.4];
+            let p2 = [cx, cy + s * 0.2];
+            let p3 = [cx - s * 0.4, cy + s * 0.8];
+            draw_screen_line_segment(device, pass, p0, p1, w, color);
+            draw_screen_line_segment(device, pass, p1, p2, w, color);
+            draw_screen_line_segment(device, pass, p2, p3, w, color);
+            draw_screen_line_segment(device, pass, p3, p0, w, color);
+        }
+        Tool::Eraser => {} // 지우개는 기존 점선 원 인디케이터만 사용, 아이콘 커서 없음
+    }
+}
+
 
 fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], radius: f32, color: [f32; 4]) {
     let segments = 16;

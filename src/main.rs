@@ -29,7 +29,7 @@ fn main() {
         .build()
         .expect("윈도우 생성 실패");
 
-    let mut app = pollster::block_on(App::new(&window));
+    let mut app = pollster::block_on(App::new(&window, &sdl_context));
     let mut event_pump = sdl_context.event_pump().expect("event pump 실패");
 
     while app.is_open() {

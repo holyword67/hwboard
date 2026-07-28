@@ -18,6 +18,7 @@ use crate::scene::{CanvasItem, ItemId, Scene, Shape, Stroke, UndoStack};
 use crate::ui;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
+use sdl3::mouse::MouseUtil;
 use sdl3::video::Window;
 use std::time::Instant;
 
@@ -70,16 +71,19 @@ pub struct App {
     has_focus: bool,
     ui_dirty: bool,
     ui_cache: Option<UiCache>,
+    mouse: MouseUtil,
 }
 
 impl App {
-    pub async fn new(window: &Window) -> Self {
+    pub async fn new(window: &Window, sdl_context: &sdl3::Sdl) -> Self {
         let core = GpuCore::new(window).await;
         let msaa_texture_view = create_msaa_texture_view(&core.device, &core.config);
         let pipeline = StrokePipeline::new(&core);
         let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
         let image_pipeline = ImagePipeline::new(&core, &pipeline.global_bgl);
         let (w, h) = window.size();
+        let mouse = sdl_context.mouse();
+        mouse.show_cursor(false); // 보드는 창 전체 — 시작 시점부터 OS 커서 숨김(커스텀 커서로 대체)
         Self {
             core,
             pipeline,
@@ -109,6 +113,7 @@ impl App {
             has_focus: true,
             ui_dirty: true,
             ui_cache: None,
+            mouse,
         }
     }
 
@@ -148,6 +153,12 @@ impl App {
             }
             Event::Window { win_event: sdl3::event::WindowEvent::FocusLost, .. } => {
                 self.has_focus = false;
+            }
+            Event::Window { win_event: sdl3::event::WindowEvent::MouseEnter, .. } => {
+                self.mouse.show_cursor(false); // 보드 안으로 진입 — OS 커서 숨기고 커스텀 커서로 대체
+            }
+            Event::Window { win_event: sdl3::event::WindowEvent::MouseLeave, .. } => {
+                self.mouse.show_cursor(true); // 보드 밖으로 이탈 — OS 커서 원복
             }
             Event::KeyDown { keycode: Some(kc), keymod, repeat: false, .. } => {
                 self.handle_key(*kc, *keymod, window)
