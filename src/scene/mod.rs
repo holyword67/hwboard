@@ -44,11 +44,6 @@ impl Scene {
         self.order.retain(|&x| x != id);
     }
 
-    pub fn translate_to(&mut self, id: ItemId, _pos: [f64; 2]) {
-        // TODO: CanvasItem 종류별로 top_left/points 이동 구현
-        let _ = self.items.get_mut(&id);
-    }
-
     /// 렌더링용 — Z순서대로 순회
     pub fn iter_ordered(&self) -> impl Iterator<Item = &CanvasItem> {
         self.order.iter().filter_map(|id| self.items.get(id))
@@ -63,16 +58,29 @@ impl Scene {
         self.order.iter().rev().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }    
 
-    pub fn item(&self, id: ItemId) -> Option<&CanvasItem> {
-        self.items.get(&id)
-    }
-
     pub fn z_index_of(&self, id: ItemId) -> Option<usize> {
         self.order.iter().position(|&x| x == id)
     }
 
+    pub fn item(&self, id: ItemId) -> Option<&CanvasItem> {
+        self.items.get(&id)
+    }
+
+    /// 선택 도구(이동/리사이즈/회전)가 아이템을 직접 변형할 때 씀.
+    pub fn item_mut(&mut self, id: ItemId) -> Option<&mut CanvasItem> {
+        self.items.get_mut(&id)
+    }
+
     pub fn mark_stroke_clean(&mut self, id: ItemId) {
         if let Some(CanvasItem::Stroke(s)) = self.items.get_mut(&id) {
+            s.mesh_dirty = false;
+        }
+    }
+
+    /// GpuResourceRegistry가 Shape 메시를 새로 구워 올린 뒤 dirty 플래그를
+    /// 끄는 데 씀 (mark_stroke_clean과 동일 역할, Shape 버전).
+    pub fn mark_shape_clean(&mut self, id: ItemId) {
+        if let Some(CanvasItem::Shape(s)) = self.items.get_mut(&id) {
             s.mesh_dirty = false;
         }
     }

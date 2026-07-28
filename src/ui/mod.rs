@@ -50,7 +50,7 @@ pub struct UiButton {
 }
 
 pub fn layout(viewport: [f32; 2], current_tool: Tool, current_color: [f32; 4]) -> Vec<UiButton> {
-    let n_tool = 2;
+    let n_tool = 3;
     let n_color = PALETTE.len();
     let total_w = n_tool as f32 * BUTTON_SIZE
         + (n_tool as f32 - 1.0) * GAP
@@ -65,7 +65,7 @@ pub fn layout(viewport: [f32; 2], current_tool: Tool, current_color: [f32; 4]) -
     let mut x = start_x;
 
     let tool_button_color = [0.3, 0.3, 0.3, 1.0];
-    for tool in [Tool::Pen, Tool::Eraser] {
+    for tool in [Tool::Pen, Tool::Eraser, Tool::Select] {
         buttons.push(UiButton {
             rect: Rect { x, y, w: BUTTON_SIZE, h: BUTTON_SIZE },
             color: tool_button_color,

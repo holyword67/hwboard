@@ -4,6 +4,7 @@
 mod clipboard_paste;
 mod pointer;
 mod render;
+mod select;
 mod shapes;
 
 use crate::gpu::core::GpuCore;
@@ -13,13 +14,14 @@ use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::StrokePipeline;
 use crate::render::ui_pipeline::UiPipeline;
-use crate::scene::{CanvasItem, ItemId, Scene, Stroke, UndoStack};
+use crate::scene::{CanvasItem, ItemId, Scene, Shape, Stroke, UndoStack};
 use crate::ui;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
 use sdl3::video::Window;
 use std::time::Instant;
 
+use select::SelectDrag;
 use shapes::SnapData;
 
 const SAMPLE_COUNT: u32 = 4;
@@ -28,6 +30,7 @@ const SAMPLE_COUNT: u32 = 4;
 pub enum Tool {
     Pen,
     Eraser,
+    Select,
 }
 
 pub struct App {
@@ -43,8 +46,17 @@ pub struct App {
     tool: Tool,
     pen_color: [f32; 4],
     drawing_stroke: Option<Stroke>,
+    /// Hold로 도형 인식이 성공하면 drawing_stroke 대신 여기로 옮겨져서
+    /// 라이브 리사이즈/회전 프리뷰가 됨. Up 시점에 이게 Some이면 이걸
+    /// CanvasItem::Shape로 커밋하고, None이면 drawing_stroke를 그대로
+    /// Stroke로 커밋(자유필기).
+    drawing_shape_preview: Option<Shape>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
     eraser_pressed: bool,
+    /// Tool::Select에서 현재 선택된 아이템.
+    selected_item: Option<ItemId>,
+    /// Tool::Select에서 진행 중인 드래그(이동/리사이즈/회전) 상태.
+    select_drag: Option<SelectDrag>,
     pointer_captured_by_ui: bool,
     panning: bool,
     last_pan_pos: [f32; 2],
@@ -52,12 +64,7 @@ pub struct App {
     open: bool,
     snap_state: Option<SnapData>,
     msaa_texture_view: wgpu::TextureView,
-    /// 상태 변화(이벤트 발생 또는 Hold 등 poll발 변화)가 있었으면 true.
-    /// render_if_needed()가 이 값을 보고 실제로 그릴지 결정하고, 그리고
-    /// 나면 false로 리셋함.
     dirty: bool,
-    /// 알트탭 등으로 창이 백그라운드로 밀려나면 false. GPU 렌더링을
-    /// 완전히 건너뛰는 데 씀(비활성 창을 계속 그릴 이유가 없음).
     has_focus: bool,
 }
 
@@ -82,16 +89,19 @@ impl App {
             tool: Tool::Pen,
             pen_color: ui::PALETTE[0],
             drawing_stroke: None,
+            drawing_shape_preview: None,
             erasing_removed: Vec::new(),
             eraser_pressed: false,
+            selected_item: None,
+            select_drag: None,
             pointer_captured_by_ui: false,
             is_fullscreen: false,
             open: true,
             panning: false, last_pan_pos: [0.0, 0.0],
             snap_state: None,
             msaa_texture_view,
-            dirty: true,       // 첫 프레임은 반드시 그려야 함
-            has_focus: true,   // [가정값] 창이 뜨는 시점엔 포커스가 있다고 가정
+            dirty: true,
+            has_focus: true,
         }
     }
 
@@ -112,9 +122,6 @@ impl App {
     }
 
     pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
-        // 어떤 종류든 SDL 이벤트가 왔다는 것 자체가 "화면이 바뀔 수도
-        // 있다"는 신호 — 개별 mutation 지점마다 dirty를 심는 대신 여기
-        // 한 곳에서 일괄 처리(빠뜨릴 여지를 원천 차단).
         self.dirty = true;
 
         match event {
@@ -128,10 +135,6 @@ impl App {
                 self.camera.resize([*w as f32, *h as f32]);
                 self.msaa_texture_view = create_msaa_texture_view(&self.core.device, &self.core.config);
             }
-            // 알트탭 등으로 포커스가 오가는 순간 — has_focus 갱신.
-            // 이벤트 자체가 이미 dirty=true를 세웠으니, 포커스 되찾는
-            // 순간 바로 한 프레임 그려짐(백그라운드에서 밀린 동안 쌓인
-            // 변화가 있었다면 그걸 반영).
             Event::Window { win_event: sdl3::event::WindowEvent::FocusGained, .. } => {
                 self.has_focus = true;
             }
@@ -167,9 +170,6 @@ impl App {
         }
     }
 
-    /// 매 프레임 호출 — hold(도형 자동스냅) 폴링. 이건 SDL 이벤트가
-    /// 아니라 시간 경과로 발생하는 변화라 handle_sdl_event의 일괄
-    /// dirty 처리에 안 걸림 — 여기서 따로 잡아줘야 함.
     pub fn poll(&mut self) {
         if let Some(input_event) = self.input.update(Instant::now()) {
             self.dirty = true;

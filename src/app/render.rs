@@ -1,23 +1,22 @@
 // ============================================================
 // src/app/render.rs
 // ============================================================
-// GPU 렌더 패스 — 캔버스(스트로크/이미지), 그리는 중인 스트로크, UI
-// 오버레이(툴바+지우개 인디케이터)까지 프레임 하나에 순서대로 그림.
-
 use super::{App, Tool};
+use crate::render::camera::Camera;
 use crate::render::pipeline::{DrawImmediate, GlobalUniforms, Vertex};
 use crate::render::tessellate::tessellate_stroke;
 use crate::scene::CanvasItem;
 use crate::ui;
 use wgpu::util::DeviceExt;
 
-/// 지우개 범위 점선 인디케이터 스타일.
 const ERASER_INDICATOR_DASH_COUNT: usize = 16;
 const ERASER_INDICATOR_LINE_WIDTH: f32 = 2.0;
 const ERASER_INDICATOR_COLOR: [f32; 4] = [0.2, 0.2, 0.2, 0.6];
 
-impl App {
+const SELECTION_LINE_WIDTH: f32 = 1.5;
+const SELECTION_COLOR: [f32; 4] = [0.1, 0.4, 0.9, 0.9];
 
+impl App {
     pub fn render_if_needed(&mut self) {
         if self.dirty && self.has_focus {
             self.render();
@@ -49,8 +48,8 @@ impl App {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_texture_view, // 👇 여기에 MSAA 뷰를 넣고
-                    resolve_target: Some(&view),   // 👇 결과를 최종 화면(view)으로 쏩니다
+                    view: &self.msaa_texture_view,
+                    resolve_target: Some(&view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
@@ -88,6 +87,23 @@ impl App {
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(0..res.index_count, 0, 0..1);
                     }
+                    CanvasItem::Shape(sh) => {
+                        let Some(res) = self.registry.get_shape(id) else { continue };
+                        if !on_stroke_pipeline {
+                            pass.set_pipeline(&self.pipeline.pipeline);
+                            pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
+                            on_stroke_pipeline = true;
+                        }
+                        let offset = [
+                            (res.origin[0] - self.camera.center[0]) as f32,
+                            (res.origin[1] - self.camera.center[1]) as f32,
+                        ];
+                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: sh.color };
+                        pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                        pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
+                        pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..res.index_count, 0, 0..1);
+                    }
                     CanvasItem::Image(_) => {
                         let Some(res) = self.registry.get_image(id) else { continue };
                         if on_stroke_pipeline {
@@ -107,23 +123,16 @@ impl App {
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(0..6, 0, 0..1);
                     }
-                    _ => {} // Shape/Text 미구현
+                    CanvasItem::Text(_) => {} // 미구현
                 }
             }
 
-            // 이후 pass 안에서 stroke_pipeline을 다시 쓰는 지점(그리는 중인
-            // 스트로크, UI 오버레이)들이 있으니 마지막 상태를 stroke로
-            // 되돌려둠.
             if !on_stroke_pipeline {
                 pass.set_pipeline(&self.pipeline.pipeline);
                 pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             }
 
-            // 그리는 중인 스트로크 — registry 캐싱 없이 매 프레임 즉석
-            // 테셀레이션 + 버퍼 생성. 아이템 딱 하나뿐이고 어차피 매 프레임
-            // 포인트가 바뀌어서 캐싱해봐야 이득이 거의 없음 (실측 전 가설
-            // 이지만, 여긴 애초에 캐싱 이득 구조 자체가 없는 케이스라 굳이
-            // 재보고 결정할 것도 없다고 판단).
+            // 그리는 중인 자유필기 스트로크(도형으로 스냅되기 전).
             if let Some(stroke) = &self.drawing_stroke {
                 let mesh = tessellate_stroke(stroke);
                 if !mesh.indices.is_empty() {
@@ -155,6 +164,39 @@ impl App {
                 }
             }
 
+            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨) — Shape을
+            // 임시 outline Stroke로 변환해서 즉석 테셀레이션(캐싱 없음,
+            // 어차피 매 프레임 바뀌니 drawing_stroke 프리뷰와 같은 이유).
+            if let Some(shape) = &self.drawing_shape_preview {
+                let virtual_stroke = shape.as_stroke();
+                let mesh = tessellate_stroke(&virtual_stroke);
+                if !mesh.indices.is_empty() {
+                    let vertex_data: Vec<Vertex> =
+                        mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
+                    let vertex_buf =
+                        self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("drawing_shape_preview_vertex_buf"),
+                            contents: bytemuck::cast_slice(&vertex_data),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        });
+                    let index_buf =
+                        self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("drawing_shape_preview_index_buf"),
+                            contents: bytemuck::cast_slice(&mesh.indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        });
+                    let offset = [
+                        (mesh.origin[0] - self.camera.center[0]) as f32,
+                        (mesh.origin[1] - self.camera.center[1]) as f32,
+                    ];
+                    let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: shape.color };
+                    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                    pass.set_vertex_buffer(0, vertex_buf.slice(..));
+                    pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                }
+            }
+
             // UI 오버레이 — 캔버스 다음에 그려서 항상 위에 보이게.
             pass.set_pipeline(&self.ui_pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
@@ -173,10 +215,6 @@ impl App {
                 draw_ui_quad(&self.core.device, &mut pass, b.rect, b.color);
             }
 
-            // 지우개 범위 인디케이터 — 누르고 있을 때만이 아니라 도구가
-            // Eraser인 동안 항상(호버 중에도) 표시. 실제 삭제 발동 여부는
-            // pointer.rs의 eraser_pressed로 게이팅되고, 이 인디케이터는
-            // 그거랑 무관하게 위치만 따라다님.
             if self.tool == Tool::Eraser {
                 draw_eraser_indicator(
                     &self.core.device,
@@ -185,6 +223,14 @@ impl App {
                     super::pointer::ERASER_RADIUS_SCREEN_PX,
                 );
             }
+
+            if self.tool == Tool::Select {
+                if let Some(id) = self.selected_item {
+                    if let Some(item) = self.scene.item(id) {
+                        draw_selection_overlay(&self.core.device, &mut pass, &self.camera, item);
+                    }
+                }
+            }
         }
 
         self.core.queue.submit(std::iter::once(encoder.finish()));
@@ -192,9 +238,6 @@ impl App {
     }
 }
 
-/// UI 버튼 하나를 사각형(삼각형 2개, 인덱스버퍼 없이 정점 6개)으로 그림.
-/// 캔버스 스트로크와 달리 버튼은 개수가 적고(6개) 정적이라 매 프레임
-/// 버퍼 새로 만들어도 비용 무시할 만함.
 fn draw_ui_quad(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Rect, color: [f32; 4]) {
     let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
     let verts = [
@@ -216,8 +259,6 @@ fn draw_ui_quad(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Re
     pass.draw(0..6, 0..1);
 }
 
-/// 스크린 좌표계에서 두 점 사이를 얇은 사각형(quad)으로 잇는다. 카메라
-/// 변환 없는 UI 좌표라 tessellate::connect_quad와 달리 f32 그대로 계산.
 fn draw_screen_line_segment(
     device: &wgpu::Device,
     pass: &mut wgpu::RenderPass,
@@ -243,7 +284,7 @@ fn draw_screen_line_segment(
         Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
     ];
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("eraser_indicator_segment_vbuf"),
+        label: Some("screen_line_segment_vbuf"),
         contents: bytemuck::cast_slice(&verts),
         usage: wgpu::BufferUsages::VERTEX,
     });
@@ -253,20 +294,88 @@ fn draw_screen_line_segment(
     pass.draw(0..6, 0..1);
 }
 
-/// 지우개 범위를 점선 원으로 표시. 대시:간격 = 1:1 비율로
-/// ERASER_INDICATOR_DASH_COUNT개 배치.
 fn draw_eraser_indicator(
     device: &wgpu::Device,
     pass: &mut wgpu::RenderPass,
     center: [f32; 2],
     radius: f32,
 ) {
-    let slots = ERASER_INDICATOR_DASH_COUNT * 2; // dash + gap 쌍
+    let slots = ERASER_INDICATOR_DASH_COUNT * 2;
     for i in 0..ERASER_INDICATOR_DASH_COUNT {
         let a0 = (i * 2) as f32 / slots as f32 * std::f32::consts::TAU;
         let a1 = (i * 2 + 1) as f32 / slots as f32 * std::f32::consts::TAU;
         let p0 = [center[0] + radius * a0.cos(), center[1] + radius * a0.sin()];
         let p1 = [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()];
         draw_screen_line_segment(device, pass, p0, p1, ERASER_INDICATOR_LINE_WIDTH, ERASER_INDICATOR_COLOR);
+    }
+}
+
+fn draw_handle_square(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], size: f32) {
+    let half = size * 0.5;
+    let rect = ui::Rect { x: center[0] - half, y: center[1] - half, w: size, h: size };
+    draw_ui_quad(device, pass, rect, SELECTION_COLOR);
+}
+
+/// 선택된 아이템 위에 점선(을 흉내낸 얇은 실선) bbox + (도형이면)
+/// 리사이즈/회전 핸들을 그림. 여기서만 쓰는 자유 함수 — item은
+/// self.scene에서 빌려온 참조라 &mut self 메서드로 넘기면 보로우
+/// 충돌이 나서, App 메서드가 아니라 자유 함수로 뺐음.
+fn draw_selection_overlay(
+    device: &wgpu::Device,
+    pass: &mut wgpu::RenderPass,
+    camera: &Camera,
+    item: &CanvasItem,
+) {
+    match item {
+        CanvasItem::Shape(sh) => {
+            let corners_screen: Vec<[f32; 2]> =
+                sh.world_corners().iter().map(|&c| camera.world_to_screen(c)).collect();
+            for i in 0..4 {
+                draw_screen_line_segment(
+                    device, pass, corners_screen[i], corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                );
+            }
+            for c in &corners_screen {
+                draw_handle_square(device, pass, *c, super::select::HANDLE_SIZE_SCREEN_PX);
+            }
+
+            let d = (super::select::ROTATE_HANDLE_DISTANCE_SCREEN_PX / camera.zoom) as f64;
+            let angle = sh.rotation as f64 - std::f64::consts::FRAC_PI_2;
+            let handle_world = [sh.center[0] + d * angle.cos(), sh.center[1] + d * angle.sin()];
+            let handle_screen = camera.world_to_screen(handle_world);
+            let top_mid_screen = [
+                (corners_screen[0][0] + corners_screen[1][0]) * 0.5,
+                (corners_screen[0][1] + corners_screen[1][1]) * 0.5,
+            ];
+            draw_screen_line_segment(device, pass, top_mid_screen, handle_screen, SELECTION_LINE_WIDTH, SELECTION_COLOR);
+            draw_handle_square(device, pass, handle_screen, super::select::HANDLE_SIZE_SCREEN_PX);
+        }
+        CanvasItem::Image(_) => {
+            let (min, max) = item.bounding_box();
+            let corners_world = [min, [max[0], min[1]], max, [min[0], max[1]]];
+            let corners_screen: Vec<[f32; 2]> = corners_world.iter().map(|&c| camera.world_to_screen(c)).collect();
+            for i in 0..4 {
+                draw_screen_line_segment(
+                    device, pass, corners_screen[i], corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                );
+            }
+            for c in &corners_screen {
+                draw_handle_square(device, pass, *c, super::select::HANDLE_SIZE_SCREEN_PX);
+            }
+        }
+        CanvasItem::Stroke(_) | CanvasItem::Text(_) => {
+            let (min, max) = item.bounding_box();
+            let corners_world = [min, [max[0], min[1]], max, [min[0], max[1]]];
+            let corners_screen: Vec<[f32; 2]> = corners_world.iter().map(|&c| camera.world_to_screen(c)).collect();
+            for i in 0..4 {
+                draw_screen_line_segment(
+                    device, pass, corners_screen[i], corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                );
+            }
+            // 핸들 없음 — 이동만 가능.
+        }
     }
 }

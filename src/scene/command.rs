@@ -8,8 +8,6 @@ pub trait Command: std::fmt::Debug {
     fn undo(&self, scene: &mut Scene);
 }
 
-// ---- 구체 커맨드들 ----
-
 #[derive(Debug)]
 pub struct AddItem {
     pub id: ItemId,
@@ -26,7 +24,6 @@ impl Command for AddItem {
 
 #[derive(Debug)]
 pub struct DeleteItems {
-    // undo 시 되살려야 하므로 지워지는 시점의 (id, item, 원래 z-order 인덱스)를 통째로 보관.
     pub removed: Vec<(ItemId, CanvasItem, usize)>,
 }
 impl Command for DeleteItems {
@@ -36,7 +33,6 @@ impl Command for DeleteItems {
         }
     }
     fn undo(&self, scene: &mut Scene) {
-        // z-order 인덱스 오름차순으로 되돌려야 삽입 위치가 꼬이지 않음
         let mut sorted = self.removed.clone();
         sorted.sort_by_key(|(_, _, idx)| *idx);
         for (id, item, idx) in sorted {
@@ -45,24 +41,76 @@ impl Command for DeleteItems {
     }
 }
 
+/// 이동 — 아이템 종류 상관없이 delta 하나로 통일(CanvasItem::translate
+/// 참고). 드래그 중엔 Scene을 직접 수정하다가 끝나는 시점에
+/// push_already_applied로 등록(지우개와 동일 패턴).
 #[derive(Debug)]
 pub struct MoveItems {
     pub ids: Vec<ItemId>,
-    pub from: Vec<[f64; 2]>,
-    pub to: Vec<[f64; 2]>,
+    pub delta: [f64; 2],
 }
 impl Command for MoveItems {
     fn apply(&self, scene: &mut Scene) {
-        for (id, pos) in self.ids.iter().zip(&self.to) {
-            scene.translate_to(*id, *pos);
+        for &id in &self.ids {
+            if let Some(item) = scene.item_mut(id) {
+                item.translate(self.delta);
+            }
         }
     }
     fn undo(&self, scene: &mut Scene) {
-        for (id, pos) in self.ids.iter().zip(&self.from) {
-            scene.translate_to(*id, *pos);
+        let neg = [-self.delta[0], -self.delta[1]];
+        for &id in &self.ids {
+            if let Some(item) = scene.item_mut(id) {
+                item.translate(neg);
+            }
         }
     }
 }
 
-// TODO: ResizeItems, EraseStrokePoints (지우개는 스트로크 일부 삭제라
-// AddItem/DeleteItems 둘 다 아닌 별도 커맨드가 필요할 수도 있음 — 다음에 논의)
+/// 이미지 리사이즈 — before/after (top_left, size) 스냅샷.
+#[derive(Debug)]
+pub struct ResizeImage {
+    pub id: ItemId,
+    pub before: ([f64; 2], [f64; 2]),
+    pub after: ([f64; 2], [f64; 2]),
+}
+impl Command for ResizeImage {
+    fn apply(&self, scene: &mut Scene) {
+        if let Some(CanvasItem::Image(img)) = scene.item_mut(self.id) {
+            img.set_bounds(self.after.0, self.after.1);
+        }
+    }
+    fn undo(&self, scene: &mut Scene) {
+        if let Some(CanvasItem::Image(img)) = scene.item_mut(self.id) {
+            img.set_bounds(self.before.0, self.before.1);
+        }
+    }
+}
+
+/// Shape 변형(이동/리사이즈/회전) — 드래그 한 번에 무슨 조합으로
+/// 바뀌었든 (center, half_extent, rotation) 전체를 통째로 스냅샷해서
+/// 하나의 커맨드로 묶음.
+#[derive(Debug)]
+pub struct TransformShape {
+    pub id: ItemId,
+    pub before: ([f64; 2], [f64; 2], f32),
+    pub after: ([f64; 2], [f64; 2], f32),
+}
+impl Command for TransformShape {
+    fn apply(&self, scene: &mut Scene) {
+        if let Some(CanvasItem::Shape(sh)) = scene.item_mut(self.id) {
+            sh.center = self.after.0;
+            sh.half_extent = self.after.1;
+            sh.rotation = self.after.2;
+            sh.mesh_dirty = true;
+        }
+    }
+    fn undo(&self, scene: &mut Scene) {
+        if let Some(CanvasItem::Shape(sh)) = scene.item_mut(self.id) {
+            sh.center = self.before.0;
+            sh.half_extent = self.before.1;
+            sh.rotation = self.before.2;
+            sh.mesh_dirty = true;
+        }
+    }
+}

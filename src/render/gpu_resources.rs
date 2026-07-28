@@ -25,18 +25,24 @@ pub struct ImageGpuResource {
 
 pub struct GpuResourceRegistry {
     strokes: HashMap<ItemId, StrokeGpuResource>,
+    /// Shape도 렌더링 시점엔 outline을 Stroke로 변환해서 같은 방식으로
+    /// 테셀레이션/캐싱함(Shape::as_stroke 참고) — 그래서 타입도
+    /// StrokeGpuResource 그대로 재사용.
+    shapes: HashMap<ItemId, StrokeGpuResource>,
     images: HashMap<ItemId, ImageGpuResource>,
 }
 
 impl GpuResourceRegistry {
     pub fn new() -> Self {
-        Self { strokes: HashMap::new(), images: HashMap::new() }
+        Self { strokes: HashMap::new(), shapes: HashMap::new(), images: HashMap::new() }
     }
 
     pub fn sync(&mut self, core: &GpuCore, image_pipeline: &ImagePipeline, scene: &mut Scene) {
         let mut seen_strokes: HashSet<ItemId> = HashSet::new();
+        let mut seen_shapes: HashSet<ItemId> = HashSet::new();
         let mut seen_images: HashSet<ItemId> = HashSet::new();
         let mut strokes_to_build: Vec<ItemId> = Vec::new();
+        let mut shapes_to_build: Vec<ItemId> = Vec::new();
         let mut images_to_build: Vec<ItemId> = Vec::new();
 
         for (id, item) in scene.iter_ordered_with_id() {
@@ -47,10 +53,14 @@ impl GpuResourceRegistry {
                         strokes_to_build.push(id);
                     }
                 }
+                CanvasItem::Shape(sh) => {
+                    seen_shapes.insert(id);
+                    if sh.mesh_dirty || !self.shapes.contains_key(&id) {
+                        shapes_to_build.push(id);
+                    }
+                }
                 CanvasItem::Image(_) => {
                     seen_images.insert(id);
-                    // 이미지는 붙여넣은 후 안 바뀌니 dirty 플래그 없이
-                    // "캐시에 없으면 한 번만 생성"으로 충분.
                     if !self.images.contains_key(&id) {
                         images_to_build.push(id);
                     }
@@ -87,6 +97,38 @@ impl GpuResourceRegistry {
             scene.mark_stroke_clean(id);
         }
 
+        // Shape도 스트로크와 완전히 같은 절차 — outline을 as_stroke()로
+        // 뽑아서 그대로 tessellate_stroke에 태움(시각 결과는 예전에
+        // Stroke로 커밋되던 도형과 동일, 데이터 모델만 바뀐 것).
+        for id in shapes_to_build {
+            let Some(CanvasItem::Shape(sh)) = scene.item(id) else { continue };
+            let virtual_stroke = sh.as_stroke();
+            let mesh = tessellate_stroke(&virtual_stroke);
+            let vertex_data: Vec<Vertex> = mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
+
+            let vertex_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shape_vertex_buf"),
+                contents: bytemuck::cast_slice(&vertex_data),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let index_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("shape_index_buf"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
+            self.shapes.insert(
+                id,
+                StrokeGpuResource {
+                    vertex_buf,
+                    index_buf,
+                    index_count: mesh.indices.len() as u32,
+                    origin: mesh.origin,
+                },
+            );
+            scene.mark_shape_clean(id);
+        }
+
         for id in images_to_build {
             let Some(CanvasItem::Image(img)) = scene.item(id) else { continue };
 
@@ -105,9 +147,6 @@ impl GpuResourceRegistry {
                 view_formats: &[],
             });
 
-            // ⚠️ [미검증] wgpu 버전마다 이 세 타입 이름이 계속 바뀌어온
-            // 이력이 있음(ImageCopyTexture/TexelCopyTextureInfo 등) —
-            // 컴파일해서 실제 이름 확인 필요할 수 있음.
             core.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
@@ -165,11 +204,16 @@ impl GpuResourceRegistry {
         }
 
         self.strokes.retain(|id, _| seen_strokes.contains(id));
+        self.shapes.retain(|id, _| seen_shapes.contains(id));
         self.images.retain(|id, _| seen_images.contains(id));
     }
 
     pub fn get_stroke(&self, id: ItemId) -> Option<&StrokeGpuResource> {
         self.strokes.get(&id)
+    }
+
+    pub fn get_shape(&self, id: ItemId) -> Option<&StrokeGpuResource> {
+        self.shapes.get(&id)
     }
 
     pub fn get_image(&self, id: ItemId) -> Option<&ImageGpuResource> {
