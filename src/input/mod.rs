@@ -20,7 +20,7 @@ use sdl3::pen::PenAxis;
 use sdl3::sys::pen::SDL_PEN_MOUSEID;
 use std::time::{Duration, Instant};
 
-const HOLD_DURATION: Duration = Duration::from_millis(400);
+const HOLD_DURATION: Duration = Duration::from_millis(1000);
 const MOVE_JITTER_PX: f32 = 3.0;
 
 fn is_pen_synthesized(which: u32) -> bool {

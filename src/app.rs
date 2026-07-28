@@ -34,6 +34,14 @@ pub enum Tool {
     Eraser,
 }
 
+pub struct SnapData {
+    center: [f64; 2],
+    local_points: Vec<[f64; 2]>, // 중심점 기준 상대 좌표 (회전/크기 조절의 원본)
+    initial_pen: [f64; 2],       // 스냅된 순간의 펜 위치 (드래그 기준점)
+    is_line: bool,               // 직선은 회전/크기 대신 한쪽 끝점만 고무줄처럼 따라가야 함
+}
+
+
 pub struct App {
     core: GpuCore,
     pipeline: StrokePipeline,
@@ -55,6 +63,7 @@ pub struct App {
     last_pan_pos: [f32; 2],
     is_fullscreen: bool,
     open: bool,
+    snap_state: Option<SnapData>,
 }
 
 impl App {
@@ -82,6 +91,7 @@ impl App {
             is_fullscreen: false,
             open: true,
             panning: false, last_pan_pos: [0.0, 0.0],
+            snap_state: None,
         }
     }
 
@@ -232,9 +242,10 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
         }
     }
 
-    fn handle_pen_pointer(&mut self, ev: PointerEvent) {
+fn handle_pen_pointer(&mut self, ev: PointerEvent) {
         match (self.tool, ev) {
             (Tool::Pen, PointerEvent::Down(s)) => {
+                self.snap_state = None; // 새로 그릴 때 스냅 상태 초기화
                 let world = self.camera.screen_to_world(s.pos);
                 self.drawing_stroke = Some(Stroke {
                     points: vec![PenPoint { pos: world, pressure: s.pressure }],
@@ -244,18 +255,72 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
                 });
             }
             (Tool::Pen, PointerEvent::Move(s)) => {
+                let world = self.camera.screen_to_world(s.pos);
+                
+                // 👇 [추가됨] 스냅 상태일 경우, 점을 추가하지 않고 도형 전체를 회전/크기 조절함
+                if let Some(snap) = &self.snap_state {
+                    if let Some(stroke) = &mut self.drawing_stroke {
+                        if snap.is_line {
+                            // 직선: 시작점은 고정, 끝점은 고무줄처럼 현재 펜 위치로
+                            stroke.points[1].pos = world;
+                        } else {
+                            // 도형: 중심점 기준으로 Scale & Rotation 동시 적용
+                            let mut dx0 = snap.initial_pen[0] - snap.center[0];
+                            let mut dy0 = snap.initial_pen[1] - snap.center[1];
+                            let dist0 = (dx0 * dx0 + dy0 * dy0).sqrt();
+                            
+                            // 스냅 순간에 중심점과 펜이 완전히 겹쳐 0으로 나누어지는 오류 방지
+                            if dist0 < 1.0 { dx0 = 1.0; dy0 = 0.0; }
+                            let safe_dist0 = dist0.max(1.0);
+                            
+                            let dx1 = world[0] - snap.center[0];
+                            let dy1 = world[1] - snap.center[1];
+                            let dist1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+                            
+                            // 크기 변화율과 각도 변화량 계산
+                            let scale = dist1 / safe_dist0;
+                            let delta_angle = dy1.atan2(dx1) - dy0.atan2(dx0);
+                            let cos_a = delta_angle.cos();
+                            let sin_a = delta_angle.sin();
+                            
+                            // 미리 저장해둔 원본 상대좌표에 변환 행렬 적용
+                            for (i, p) in stroke.points.iter_mut().enumerate() {
+                                let lp = snap.local_points[i];
+                                let sx = lp[0] * scale;
+                                let sy = lp[1] * scale;
+                                
+                                let rx = sx * cos_a - sy * sin_a;
+                                let ry = sx * sin_a + sy * cos_a;
+                                
+                                p.pos = [snap.center[0] + rx, snap.center[1] + ry];
+                            }
+                        }
+                        stroke.mesh_dirty = true;
+                    }
+                    return; // 렌더링 끝냈으니 여기서 함수 종료
+                }
+
+                // 스냅 상태가 아닐 땐 평범하게 선 긋기
                 if let Some(stroke) = &mut self.drawing_stroke {
-                    let world = self.camera.screen_to_world(s.pos);
                     stroke.points.push(PenPoint { pos: world, pressure: s.pressure });
                 }
             }
             (Tool::Pen, PointerEvent::Up(_)) => {
+                self.snap_state = None; // 그리기 완료 시 상태 해제
                 if let Some(stroke) = self.drawing_stroke.take() {
-                    // 점 1개짜리 스트로크(그냥 탭)는 무의미하니 버림.
                     if stroke.points.len() >= 2 {
                         let id = self.scene.alloc_id();
                         let cmd = Box::new(AddItem { id, item: CanvasItem::Stroke(stroke) });
                         self.undo_stack.execute(cmd, &mut self.scene);
+                    }
+                }
+            }
+            (Tool::Pen, PointerEvent::Hold(_)) => {
+                if self.snap_state.is_some() { return; } // 이미 변환됐으면 무시
+                if let Some(stroke) = &mut self.drawing_stroke {
+                    // 👇 인식 성공 시 snap_state에 변환 데이터를 저장
+                    if let Some(snap_data) = recognize_and_snap_shape(stroke) {
+                        self.snap_state = Some(snap_data);
                     }
                 }
             }
@@ -484,4 +549,116 @@ fn draw_ui_quad(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Re
     pass.set_immediates(0, bytemuck::bytes_of(&immediate));
     pass.set_vertex_buffer(0, vbuf.slice(..));
     pass.draw(0..6, 0..1);
+}
+
+
+
+// ============================================================
+// 도형 인식기 (Shape Recognizer)
+// ============================================================
+
+/// RDP(Ramer-Douglas-Peucker) 알고리즘으로 자잘한 곡선을 단순한 다각형으로 축약합니다.
+fn rdp(points: &[PenPoint], epsilon: f64, out: &mut Vec<PenPoint>) {
+    if points.is_empty() { return; }
+    
+    let mut dmax = 0.0;
+    let mut index = 0;
+    let end = points.len() - 1;
+    
+    for i in 1..end {
+        let d = crate::scene::segment_dist_sq(points[0].pos, points[end].pos, points[i].pos);
+        if d > dmax {
+            index = i;
+            dmax = d;
+        }
+    }
+    
+    if dmax > epsilon * epsilon {
+        let mut rec_results1 = Vec::new();
+        rdp(&points[0..=index], epsilon, &mut rec_results1);
+        
+        let mut rec_results2 = Vec::new();
+        rdp(&points[index..=end], epsilon, &mut rec_results2);
+        
+        out.extend_from_slice(&rec_results1[0..rec_results1.len() - 1]);
+        out.extend_from_slice(&rec_results2);
+    } else {
+        out.push(points[0].clone());
+        out.push(points[end].clone());
+    }
+}
+
+/// 스트로크를 분석하여 적절한 완벽한 기하학적 도형으로 변환합니다.
+fn recognize_and_snap_shape(stroke: &mut Stroke) -> Option<SnapData> {
+    if stroke.points.len() < 10 { return None; }
+
+    let (min, max) = crate::scene::stroke_bbox(stroke);
+    let diag = ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2)).sqrt();
+    if diag < 10.0 { return None; }
+
+    let first = stroke.points.first().unwrap().pos;
+    let last = stroke.points.last().unwrap().pos;
+    let initial_pen = last; // 스냅 발동 순간 펜의 위치
+    
+    let start_end_dist = ((first[0] - last[0]).powi(2) + (first[1] - last[1]).powi(2)).sqrt();
+    let closed = start_end_dist < diag * 0.2; 
+    let avg_pressure = stroke.points.iter().map(|p| p.pressure).sum::<f32>() / stroke.points.len() as f32;
+
+    if !closed {
+        // [1. 직선]
+        stroke.points = vec![
+            PenPoint { pos: first, pressure: avg_pressure },
+            PenPoint { pos: last, pressure: avg_pressure },
+        ];
+        stroke.mesh_dirty = true;
+        
+        // 직선은 회전 행렬 대신 "시작점 고정, 끝점 펜 추적"을 사용하므로 중심점을 시작점(first)으로 둠
+        return Some(SnapData { center: first, local_points: vec![], initial_pen, is_line: true });
+        
+    } else {
+        // [닫힌 도형 처리]
+        let mut process_points = stroke.points.clone();
+        let last_idx = process_points.len() - 1;
+        process_points[last_idx].pos = process_points[0].pos;
+
+        let mut simplified = Vec::new();
+        rdp(&process_points, diag * 0.12, &mut simplified);
+        let v_count = simplified.len();
+        
+        if v_count == 4 { // 삼각형
+            stroke.points = simplified.into_iter().map(|mut p| { p.pressure = avg_pressure; p }).collect();
+        } else if v_count == 5 { // 직사각형
+            stroke.points = vec![
+                PenPoint { pos: [min[0], min[1]], pressure: avg_pressure },
+                PenPoint { pos: [max[0], min[1]], pressure: avg_pressure },
+                PenPoint { pos: [max[0], max[1]], pressure: avg_pressure },
+                PenPoint { pos: [min[0], max[1]], pressure: avg_pressure },
+                PenPoint { pos: [min[0], min[1]], pressure: avg_pressure },
+            ];
+        } else { // 원
+            let center_x = (min[0] + max[0]) / 2.0;
+            let center_y = (min[1] + max[1]) / 2.0;
+            let r = ((max[0] - min[0]) + (max[1] - min[1])) / 4.0;
+            
+            let mut circle_pts = Vec::new();
+            let segments = 64; 
+            for i in 0..=segments {
+                let theta = (i as f64 / segments as f64) * std::f64::consts::TAU;
+                circle_pts.push(PenPoint {
+                    pos: [center_x + r * theta.cos(), center_y + r * theta.sin()],
+                    pressure: avg_pressure,
+                });
+            }
+            stroke.points = circle_pts;
+        }
+        
+        stroke.mesh_dirty = true;
+        
+        // 만들어진 완벽한 도형의 중심점과, 그 중심점 기준의 상대 좌표를 기록해 둡니다 (회전용)
+        let (s_min, s_max) = crate::scene::stroke_bbox(stroke);
+        let center = [(s_min[0] + s_max[0]) / 2.0, (s_min[1] + s_max[1]) / 2.0];
+        let local_points = stroke.points.iter().map(|p| [p.pos[0] - center[0], p.pos[1] - center[1]]).collect();
+        
+        return Some(SnapData { center, local_points, initial_pen, is_line: false });
+    }
 }

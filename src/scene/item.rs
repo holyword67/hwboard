@@ -121,7 +121,7 @@ impl CanvasItem {
 }
 
 
-fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
+pub fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
     let mut min = [f64::MAX, f64::MAX];
     let mut max = [f64::MIN, f64::MIN];
     for p in &s.points {
@@ -135,7 +135,7 @@ fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
 
 
 /// [추가됨] 점 P와 선분 AB 사이의 최단 거리 제곱을 구하는 수학 함수
-fn segment_dist_sq(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+pub fn segment_dist_sq(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
     let ab_x = b[0] - a[0];
     let ab_y = b[1] - a[1];
     let ap_x = p[0] - a[0];
