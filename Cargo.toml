@@ -12,7 +12,6 @@ sdl3 = { version = "0.18.4", features = ["raw-window-handle"] }
 image = "0.25.10"
 
 [features]
-profiling = ["dep:puffin_http"]
 
 [profile.release]
 opt-level = 3
