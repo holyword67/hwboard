@@ -30,6 +30,6 @@ fn main() {
             app.handle_sdl_event(&event, &mut window);
         }
         app.poll();
-        app.render();
+        app.render_if_needed();
     }
 }
