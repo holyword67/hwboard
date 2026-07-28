@@ -9,14 +9,14 @@ use crate::ui::{self, UiAction};
 pub(super) const ERASER_RADIUS_SCREEN_PX: f32 = 12.0;
 
 impl App {
-    pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
+pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         if let PointerEvent::Down(s) = ev {
             if let Some(action) = ui::hit_test(s.pos, self.camera.viewport_size, self.tool, self.pen_color, self.pen_width) {
                 self.pointer_captured_by_ui = true;
                 match action {
                     UiAction::SelectTool(t) => self.tool = t,
                     UiAction::SelectColor(c) => self.pen_color = c,
-                    UiAction::SelectThickness(w) => self.pen_width = w, // 두께 선택 반영
+                    UiAction::SelectThickness(w) => self.pen_width = w,
                 }
                 return;
             }

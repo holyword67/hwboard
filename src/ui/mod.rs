@@ -3,7 +3,7 @@
 // ============================================================
 use crate::app::Tool;
 
-pub const BUTTON_SIZE: f32 = 20.0; // 원래 40.0에서 절반 (면적은 1/4)
+pub const BUTTON_SIZE: f32 = 20.0; // 크기 절반 축소 (면적 1/4)
 pub const GAP: f32 = 4.0;
 pub const GROUP_GAP: f32 = 12.0;
 pub const MARGIN_BOTTOM: f32 = 10.0;
@@ -20,10 +20,7 @@ pub const PALETTE: [[f32; 4]; 4] = [
 
 #[derive(Debug, Clone, Copy)]
 pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
+    pub x: f32, pub y: f32, pub w: f32, pub h: f32,
 }
 
 impl Rect {
@@ -39,19 +36,18 @@ pub enum UiAction {
     SelectThickness(f32),
 }
 
-// 렌더러가 버튼을 그릴 때 무엇을 그릴지 구분하기 위한 Enum
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ButtonKind {
     Tool(Tool),
     Color([f32; 4]),
-    Thickness(f32),
+    ThicknessBar { selected_index: usize },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct UiButton {
     pub rect: Rect,
     pub kind: ButtonKind,
-    pub action: UiAction,
+    pub action: Option<UiAction>,
     pub selected: bool,
 }
 
@@ -65,52 +61,53 @@ pub fn layout(
     let n_color = PALETTE.len();
     
     let tool_w = n_tool as f32 * BUTTON_SIZE + (n_tool as f32 - 1.0) * GAP;
-    let color_w = n_color as f32 * BUTTON_SIZE; // 팔레트는 간격(GAP)이 0임
+    let color_w = n_color as f32 * BUTTON_SIZE; // 팔레트는 간격 없음
     let total_w = tool_w + GROUP_GAP + color_w;
 
     let start_x = (viewport[0] - total_w) * 0.5;
-    let tool_start_x = start_x;
-    let color_start_x = tool_start_x + tool_w + GROUP_GAP;
+    let color_start_x = start_x + tool_w + GROUP_GAP;
     
     let tool_y = viewport[1] - MARGIN_BOTTOM - BUTTON_SIZE;
-    let thickness_y = tool_y - BUTTON_SIZE - GAP * 1.5; // 도구 버튼 위쪽에 배치
+    let thickness_y = tool_y - BUTTON_SIZE - GAP * 1.5;
 
     let mut buttons = Vec::new();
 
-    // 1. 두께 버튼 (도구 버튼 그룹 바로 위)
-    let mut tx = tool_start_x;
-    for &t in &THICKNESS_LEVELS {
-        buttons.push(UiButton {
-            rect: Rect { x: tx, y: thickness_y, w: BUTTON_SIZE * 0.8, h: BUTTON_SIZE * 0.8 },
-            kind: ButtonKind::Thickness(t),
-            action: UiAction::SelectThickness(t),
-            selected: (t - current_thickness).abs() < 0.1,
-        });
-        tx += BUTTON_SIZE * 0.8 + GAP;
+    // 1. 물방울 두께 바 (도구 버튼들 너비에 맞춤)
+    let bar_w = tool_w * 0.9;
+    let bar_h = BUTTON_SIZE * 0.7;
+    let mut selected_idx = 1;
+    for (i, &t) in THICKNESS_LEVELS.iter().enumerate() {
+        if (t - current_thickness).abs() < 0.1 { selected_idx = i; break; }
     }
+    buttons.push(UiButton {
+        rect: Rect { x: start_x, y: thickness_y + (BUTTON_SIZE - bar_h)*0.5, w: bar_w, h: bar_h },
+        kind: ButtonKind::ThicknessBar { selected_index: selected_idx },
+        action: None, // hit_test에서 비율로 분기
+        selected: false,
+    });
 
     // 2. 도구 버튼
-    let mut x = tool_start_x;
+    let mut x = start_x;
     for tool in [Tool::Pen, Tool::Eraser, Tool::Select] {
         buttons.push(UiButton {
             rect: Rect { x, y: tool_y, w: BUTTON_SIZE, h: BUTTON_SIZE },
             kind: ButtonKind::Tool(tool),
-            action: UiAction::SelectTool(tool),
+            action: Some(UiAction::SelectTool(tool)),
             selected: tool == current_tool,
         });
         x += BUTTON_SIZE + GAP;
     }
 
-    // 3. 컬러 팔레트 (간격 없이 딱 붙여서)
+    // 3. 컬러 팔레트 (딱 붙여서)
     let mut cx = color_start_x;
     for &color in PALETTE.iter() {
         buttons.push(UiButton {
             rect: Rect { x: cx, y: tool_y, w: BUTTON_SIZE, h: BUTTON_SIZE },
             kind: ButtonKind::Color(color),
-            action: UiAction::SelectColor(color),
+            action: Some(UiAction::SelectColor(color)),
             selected: color == current_color,
         });
-        cx += BUTTON_SIZE; // GAP 없이 크기만큼만 더함
+        cx += BUTTON_SIZE;
     }
 
     buttons
@@ -123,8 +120,19 @@ pub fn hit_test(
     current_color: [f32; 4],
     current_thickness: f32,
 ) -> Option<UiAction> {
-    layout(viewport, current_tool, current_color, current_thickness)
-        .into_iter()
-        .find(|b| b.rect.contains(pos))
-        .map(|b| b.action)
+    for b in layout(viewport, current_tool, current_color, current_thickness) {
+        if b.rect.contains(pos) {
+            if let Some(action) = b.action {
+                return Some(action);
+            }
+            if let ButtonKind::ThicknessBar { .. } = b.kind {
+                // 두께 바 클릭 시, 가로 x 좌표의 비율(0.0~1.0)을 구해 5등분 중 어디인지 판단
+                let ratio = (pos[0] - b.rect.x) / b.rect.w;
+                let idx = (ratio * 5.0) as usize;
+                let idx = idx.clamp(0, 4);
+                return Some(UiAction::SelectThickness(THICKNESS_LEVELS[idx]));
+            }
+        }
+    }
+    None
 }

@@ -207,21 +207,17 @@ impl App {
                     ui::ButtonKind::Color(c) => {
                         draw_ui_quad(&self.core.device, &mut pass, b.rect, c);
                         if b.selected {
-                            // 선택된 색상 위에 역삼각형
+                            // 선택된 색상 위에 역삼각형 마커 표시
                             let cx = b.rect.x + b.rect.w * 0.5;
                             let cy = b.rect.y - 6.0;
                             draw_ui_triangle_inverted(&self.core.device, &mut pass, [cx, cy], 8.0, c);
                         }
                     }
-                    ui::ButtonKind::Thickness(t) => {
-                        let cx = b.rect.x + b.rect.w * 0.5;
-                        let cy = b.rect.y + b.rect.h * 0.5;
-                        let color = if b.selected { [0.0, 0.0, 0.0, 1.0] } else { [0.6, 0.6, 0.6, 1.0] };
-                        let radius = (t * 0.5).max(1.5) + 1.0; // 화면에 보이기 좋게 시각적 스케일링
-                        draw_ui_circle(&self.core.device, &mut pass, [cx, cy], radius, color);
+                    ui::ButtonKind::ThicknessBar { selected_index } => {
+                        draw_thickness_bar(&self.core.device, &mut pass, b.rect, selected_index, self.pen_color);
                     }
                     ui::ButtonKind::Tool(tool) => {
-                        // 선택되면 선택된 색상으로, 아니면 회색
+                        // 선택되면 컬러, 아니면 회색
                         let color = if b.selected { self.pen_color } else { [0.6, 0.6, 0.6, 1.0] };
                         draw_tool_icon(&self.core.device, &mut pass, tool, b.rect, color);
                     }
@@ -436,27 +432,69 @@ fn draw_ui_triangle_inverted(device: &wgpu::Device, pass: &mut wgpu::RenderPass,
 fn draw_tool_icon(device: &wgpu::Device, pass: &mut wgpu::RenderPass, tool: Tool, rect: ui::Rect, color: [f32; 4]) {
     let cx = rect.x + rect.w * 0.5;
     let cy = rect.y + rect.h * 0.5;
-    let s = rect.w * 0.35; // 아이콘 크기 스케일
-    let w = 2.0; // 선 두께
+    let s = rect.w * 0.45; // 아이콘 크기
+    let w = 1.5; // 선 두께
     
     match tool {
         Tool::Pen => {
-            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx + s, cy - s], w, color); // 대각선 몸통
-            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx - s + 5.0, cy + s], w, color); // 펜촉 1
-            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx - s, cy + s - 5.0], w, color); // 펜촉 2
+            // 45도 기울어진 귀여운 연필
+            // 로컬 좌표(수직으로 서 있는 연필)를 먼저 정의하고 45도 회전시킵니다.
+            let rotate = |x: f32, y: f32| -> [f32; 2] {
+                let angle = std::f32::consts::FRAC_PI_4; // 45도
+                let rx = x * angle.cos() - y * angle.sin();
+                let ry = x * angle.sin() + y * angle.cos();
+                [cx + rx, cy + ry]
+            };
+
+            let pw = s * 0.4;  // 연필 반폭
+            let ph = s * 0.8;  // 연필 몸통 반길이
+            let pt = s * 1.3;  // 펜촉 끝 길이 (y좌표)
+
+            // 점 5개 정의
+            let tl = rotate(-pw, -ph); // 좌상단
+            let tr = rotate(pw, -ph);  // 우상단
+            let bl = rotate(-pw, ph);  // 좌하단 (몸통 끝)
+            let br = rotate(pw, ph);   // 우하단 (몸통 끝)
+            let tip = rotate(0.0, pt); // 펜촉 끝
+
+            // 연필 그리기
+            draw_screen_line_segment(device, pass, tl, tr, w, color); // 윗면 (지우개쪽)
+            draw_screen_line_segment(device, pass, tl, bl, w, color); // 왼쪽 몸통
+            draw_screen_line_segment(device, pass, tr, br, w, color); // 오른쪽 몸통
+            draw_screen_line_segment(device, pass, bl, br, w, color); // 몸통과 펜촉 경계
+            draw_screen_line_segment(device, pass, bl, tip, w, color); // 펜촉 왼쪽
+            draw_screen_line_segment(device, pass, br, tip, w, color); // 펜촉 오른쪽
         }
         Tool::Eraser => {
-            let p0 = [cx - s, cy - s*0.6];
-            let p1 = [cx + s, cy - s*0.6];
-            let p2 = [cx + s, cy + s*0.6];
-            let p3 = [cx - s, cy + s*0.6];
-            draw_screen_line_segment(device, pass, p0, p1, w, color);
-            draw_screen_line_segment(device, pass, p1, p2, w, color);
-            draw_screen_line_segment(device, pass, p2, p3, w, color);
-            draw_screen_line_segment(device, pass, p3, p0, w, color);
+            // 스케치처럼 평범하고 반듯한 지우개 + 아래쪽 종이 껍데기
+            let ew = s * 0.5; // 반폭
+            let eh_top = s * 0.6; // 윗부분(고무) 높이
+            let eh_bot = s * 0.3; // 아랫부분(종이 껍데기) 높이
+
+            // 윗부분(고무)
+            let tl = [cx - ew, cy - eh_top];
+            let tr = [cx + ew, cy - eh_top];
+            let bl = [cx - ew, cy + eh_bot - eh_bot*0.5];
+            let br = [cx + ew, cy + eh_bot - eh_bot*0.5];
+            
+            draw_screen_line_segment(device, pass, tl, tr, w, color); // 윗면
+            draw_screen_line_segment(device, pass, tl, bl, w, color); // 왼쪽 고무
+            draw_screen_line_segment(device, pass, tr, br, w, color); // 오른쪽 고무
+            
+            // 아랫부분(종이 껍데기, 살짝 더 넓게 감싼 형태)
+            let wrap_w = ew * 1.1; 
+            let wrap_tl = [cx - wrap_w, cy + eh_bot - eh_bot*0.5];
+            let wrap_tr = [cx + wrap_w, cy + eh_bot - eh_bot*0.5];
+            let wrap_bl = [cx - wrap_w, cy + eh_bot * 1.2];
+            let wrap_br = [cx + wrap_w, cy + eh_bot * 1.2];
+
+            draw_screen_line_segment(device, pass, wrap_tl, wrap_tr, w, color); // 껍데기 윗선
+            draw_screen_line_segment(device, pass, wrap_bl, wrap_br, w, color); // 껍데기 아랫선
+            draw_screen_line_segment(device, pass, wrap_tl, wrap_bl, w, color); // 껍데기 왼쪽
+            draw_screen_line_segment(device, pass, wrap_tr, wrap_br, w, color); // 껍데기 오른쪽
         }
         Tool::Select => {
-            // 화살표(마우스 커서 모양)
+            // 마우스 화살표
             let p0 = [cx - s*0.4, cy - s*0.7]; 
             let p1 = [cx + s*0.6, cy + s*0.4]; 
             let p2 = [cx, cy + s*0.2];         
@@ -466,5 +504,81 @@ fn draw_tool_icon(device: &wgpu::Device, pass: &mut wgpu::RenderPass, tool: Tool
             draw_screen_line_segment(device, pass, p2, p3, w, color);
             draw_screen_line_segment(device, pass, p3, p0, w, color);
         }
+    }
+}
+
+fn draw_thickness_bar(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Rect, selected_index: usize, fill_color: [f32; 4]) {
+    let x0 = rect.x;
+    let total_w = rect.w;
+    let cy = rect.y + rect.h * 0.5;
+    let max_r = rect.h * 0.5;
+    
+    // 바늘처럼 뾰족하지 않게, 왼쪽 시작점의 최소 두께(반지름) 설정
+    let min_r = max_r * 0.15; 
+    
+    let get_r = |x: f32| -> f32 {
+        let cx = x0 + total_w - max_r; // 오른쪽 반원의 중심
+        if x <= cx {
+            let t = (x - x0) / (cx - x0).max(0.001);
+            min_r + t * (max_r - min_r) // 0.0에서 시작하지 않고 min_r부터 서서히 커짐
+        } else {
+            let dx = x - cx;
+            if dx >= max_r { 0.0 } else { (max_r*max_r - dx*dx).sqrt() }
+        }
+    };
+
+    let step = total_w / 5.0;
+
+    // 1. 선택된 구간 색 채우기
+    let start_x = x0 + selected_index as f32 * step;
+    let end_x = x0 + (selected_index + 1) as f32 * step;
+    let slices = 15;
+    let mut fill_verts = Vec::new();
+    for i in 0..slices {
+        let x_a = start_x + (i as f32 / slices as f32) * step;
+        let x_b = start_x + ((i + 1) as f32 / slices as f32) * step;
+        let ra = get_r(x_a);
+        let rb = get_r(x_b);
+        fill_verts.push(Vertex { pos: [x_a, cy - ra] });
+        fill_verts.push(Vertex { pos: [x_b, cy - rb] });
+        fill_verts.push(Vertex { pos: [x_b, cy + rb] });
+        fill_verts.push(Vertex { pos: [x_a, cy - ra] });
+        fill_verts.push(Vertex { pos: [x_b, cy + rb] });
+        fill_verts.push(Vertex { pos: [x_a, cy + ra] });
+    }
+    if !fill_verts.is_empty() {
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("thickness_fill_vbuf"),
+            contents: bytemuck::cast_slice(&fill_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let immediate = crate::render::pipeline::DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color: fill_color };
+        pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+        pass.set_vertex_buffer(0, vbuf.slice(..));
+        pass.draw(0..fill_verts.len() as u32, 0..1);
+    }
+
+    // 2. 외곽선(검은색) 그리기
+    let outline_color = [0.1, 0.1, 0.1, 1.0];
+    let outline_w = 1.0;
+    
+    // 왼쪽 뭉툭하게 막아주는 세로 선 추가
+    draw_screen_line_segment(device, pass, [x0, cy - min_r], [x0, cy + min_r], outline_w, outline_color);
+
+    let total_slices = 40;
+    for i in 0..total_slices {
+        let x_a = x0 + (i as f32 / total_slices as f32) * total_w;
+        let x_b = x0 + ((i + 1) as f32 / total_slices as f32) * total_w;
+        let ra = get_r(x_a);
+        let rb = get_r(x_b);
+        draw_screen_line_segment(device, pass, [x_a, cy - ra], [x_b, cy - rb], outline_w, outline_color); // 윗선
+        draw_screen_line_segment(device, pass, [x_a, cy + ra], [x_b, cy + rb], outline_w, outline_color); // 아랫선
+    }
+
+    // 3. 5등분 구분선 그리기
+    for i in 1..5 {
+        let lx = x0 + i as f32 * step;
+        let r = get_r(lx);
+        draw_screen_line_segment(device, pass, [lx, cy - r], [lx, cy + r], outline_w, outline_color);
     }
 }
