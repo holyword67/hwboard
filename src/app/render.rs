@@ -671,6 +671,9 @@ fn draw_tool_icon_at(
     size: f32,
     color: [f32; 4],
 ) {
+    // `center`는 이제 "아이콘 중심"이 아니라 "실제 포인터가 닿는 지점
+    // (핫스팟)"으로 취급함 — Pen은 펜촉 끝, Select는 화살표 뾰족한 끝점이
+    // 정확히 이 좌표에 오도록 전체 아이콘을 반대로 밀어서 그림.
     let cx = center[0];
     let cy = center[1];
     let s = size * 0.45;
@@ -678,20 +681,28 @@ fn draw_tool_icon_at(
 
     match tool {
         Tool::Pen => {
-            let rotate = |x: f32, y: f32| -> [f32; 2] {
+            // 회전만 적용한 "로컬" 좌표 (아직 center 안 더함).
+            let local = |x: f32, y: f32| -> [f32; 2] {
                 let angle = std::f32::consts::FRAC_PI_4;
-                let rx = x * angle.cos() - y * angle.sin();
-                let ry = x * angle.sin() + y * angle.cos();
-                [cx + rx, cy + ry]
+                [x * angle.cos() - y * angle.sin(), x * angle.sin() + y * angle.cos()]
             };
             let pw = s * 0.4;
             let ph = s * 0.8;
             let pt = s * 1.3;
-            let tl = rotate(-pw, -ph);
-            let tr = rotate(pw, -ph);
-            let bl = rotate(-pw, ph);
-            let br = rotate(pw, ph);
-            let tip = rotate(0.0, pt);
+
+            // 핫스팟 = 펜촉(tip)의 로컬 좌표. 이 값만큼 반대로 밀어서
+            // 최종 펜촉 좌표가 정확히 (cx, cy)가 되게 함.
+            let tip_local = local(0.0, pt);
+            let anchor = |x: f32, y: f32| -> [f32; 2] {
+                let l = local(x, y);
+                [cx + l[0] - tip_local[0], cy + l[1] - tip_local[1]]
+            };
+
+            let tl = anchor(-pw, -ph);
+            let tr = anchor(pw, -ph);
+            let bl = anchor(-pw, ph);
+            let br = anchor(pw, ph);
+            let tip = anchor(0.0, pt); // == [cx, cy]
             draw_screen_line_segment(device, pass, tl, tr, w, color);
             draw_screen_line_segment(device, pass, tl, bl, w, color);
             draw_screen_line_segment(device, pass, tr, br, w, color);
@@ -700,10 +711,21 @@ fn draw_tool_icon_at(
             draw_screen_line_segment(device, pass, br, tip, w, color);
         }
         Tool::Select => {
-            let p0 = [cx - s * 0.4, cy - s * 0.7];
-            let p1 = [cx + s * 0.6, cy + s * 0.4];
-            let p2 = [cx, cy + s * 0.2];
-            let p3 = [cx - s * 0.4, cy + s * 0.8];
+            // p0(좌상단 뾰족한 꼭짓점)가 화살표의 핫스팟 — 이 점이
+            // 정확히 (cx, cy)에 오도록 p1~p3를 같은 만큼 이동.
+            let p0_local = [-s * 0.4, -s * 0.7];
+            let p1_local = [s * 0.6, s * 0.4];
+            let p2_local = [0.0, s * 0.2];
+            let p3_local = [-s * 0.4, s * 0.8];
+
+            let shift = |l: [f32; 2]| -> [f32; 2] {
+                [cx + l[0] - p0_local[0], cy + l[1] - p0_local[1]]
+            };
+
+            let p0 = [cx, cy]; // == shift(p0_local)
+            let p1 = shift(p1_local);
+            let p2 = shift(p2_local);
+            let p3 = shift(p3_local);
             draw_screen_line_segment(device, pass, p0, p1, w, color);
             draw_screen_line_segment(device, pass, p1, p2, w, color);
             draw_screen_line_segment(device, pass, p2, p3, w, color);
