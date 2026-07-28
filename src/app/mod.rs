@@ -185,6 +185,25 @@ impl App {
                 let _ = window.set_fullscreen(self.is_fullscreen);
             }
             Keycode::V if ctrl => self.paste_image_from_clipboard(),
+
+            // 도구 선택: A=펜, S=지우개, D=선택기
+            Keycode::A => { self.tool = Tool::Pen; self.ui_dirty = true; }
+            Keycode::S => { self.tool = Tool::Eraser; self.ui_dirty = true; }
+            Keycode::D => { self.tool = Tool::Select; self.ui_dirty = true; }
+
+            // 컬러 팔레트: Q,W,E,R = ui::PALETTE[0..4] 순서 그대로
+            Keycode::Q => { self.pen_color = ui::PALETTE[0]; self.ui_dirty = true; }
+            Keycode::W => { self.pen_color = ui::PALETTE[1]; self.ui_dirty = true; }
+            Keycode::E => { self.pen_color = ui::PALETTE[2]; self.ui_dirty = true; }
+            Keycode::R => { self.pen_color = ui::PALETTE[3]; self.ui_dirty = true; }
+
+            // 두께: 1~5 = ui::THICKNESS_LEVELS[0..5] 순서 그대로
+            Keycode::_1 => { self.pen_width = ui::THICKNESS_LEVELS[0]; self.ui_dirty = true; }
+            Keycode::_2 => { self.pen_width = ui::THICKNESS_LEVELS[1]; self.ui_dirty = true; }
+            Keycode::_3 => { self.pen_width = ui::THICKNESS_LEVELS[2]; self.ui_dirty = true; }
+            Keycode::_4 => { self.pen_width = ui::THICKNESS_LEVELS[3]; self.ui_dirty = true; }
+            Keycode::_5 => { self.pen_width = ui::THICKNESS_LEVELS[4]; self.ui_dirty = true; }
+
             _ => {}
         }
     }
