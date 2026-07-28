@@ -6,6 +6,7 @@
 
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState, PointerEvent, PEN_BUTTON_REDO, PEN_BUTTON_UNDO};
+use sdl3::keyboard::Keycode;
 use crate::render::camera::Camera;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::pipeline::{DrawImmediate, GlobalUniforms, StrokePipeline, Vertex};
@@ -38,10 +39,9 @@ pub struct App {
     camera: Camera,
     input: InputState,
     tool: Tool,
-    /// A안: 그리는 중인 스트로크는 Scene 밖 임시 상태로 보관, Up에서 커밋.
     drawing_stroke: Option<Stroke>,
-    /// 지우개 드래그 중 누적된 삭제분 — Up에서 한 번에 커밋.
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
+    is_fullscreen: bool,
     open: bool,
 }
 
@@ -73,7 +73,7 @@ impl App {
         self.tool = tool;
     }
 
-    pub fn handle_sdl_event(&mut self, event: &Event, _window: &mut Window) {
+pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
         match event {
             Event::Quit { .. } => self.open = false,
             Event::Window {
@@ -84,11 +84,29 @@ impl App {
                 self.core.resize(*w as u32, *h as u32);
                 self.camera.resize([*w as f32, *h as f32]);
             }
+            Event::KeyDown { keycode: Some(kc), repeat: false, .. } => {
+                self.handle_key(*kc, window)
+            }
             _ => {
                 if let Some(input_event) = self.input.process_event(event) {
                     self.handle_input_event(input_event);
                 }
             }
+        }
+    }
+
+    /// 키보드 단축키 — 언두/리두는 펜 barrel 버튼이랑 중복 할당(입력
+    /// 수단 다를 뿐 같은 undo_stack을 씀). `repeat: false`로 걸러서
+    /// 키 꾹 누르고 있을 때 undo가 프레임마다 연타되는 것 방지.
+    fn handle_key(&mut self, kc: Keycode, window: &mut Window) {
+        match kc {
+            Keycode::Backspace => self.undo_stack.undo(&mut self.scene),
+            Keycode::Equals => self.undo_stack.redo(&mut self.scene),
+            Keycode::Return => {
+                self.is_fullscreen = !self.is_fullscreen;
+                let _ = window.set_fullscreen(self.is_fullscreen);
+            }
+            _ => {}
         }
     }
 
