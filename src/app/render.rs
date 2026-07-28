@@ -201,18 +201,31 @@ impl App {
             pass.set_pipeline(&self.ui_pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
 
-            let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color);
+            let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color, self.pen_width);
             for b in &buttons {
-                if b.selected {
-                    let hl = ui::Rect {
-                        x: b.rect.x - ui::HIGHLIGHT_PADDING,
-                        y: b.rect.y - ui::HIGHLIGHT_PADDING,
-                        w: b.rect.w + ui::HIGHLIGHT_PADDING * 2.0,
-                        h: b.rect.h + ui::HIGHLIGHT_PADDING * 2.0,
-                    };
-                    draw_ui_quad(&self.core.device, &mut pass, hl, ui::HIGHLIGHT_COLOR);
+                match b.kind {
+                    ui::ButtonKind::Color(c) => {
+                        draw_ui_quad(&self.core.device, &mut pass, b.rect, c);
+                        if b.selected {
+                            // 선택된 색상 위에 역삼각형
+                            let cx = b.rect.x + b.rect.w * 0.5;
+                            let cy = b.rect.y - 6.0;
+                            draw_ui_triangle_inverted(&self.core.device, &mut pass, [cx, cy], 8.0, c);
+                        }
+                    }
+                    ui::ButtonKind::Thickness(t) => {
+                        let cx = b.rect.x + b.rect.w * 0.5;
+                        let cy = b.rect.y + b.rect.h * 0.5;
+                        let color = if b.selected { [0.0, 0.0, 0.0, 1.0] } else { [0.6, 0.6, 0.6, 1.0] };
+                        let radius = (t * 0.5).max(1.5) + 1.0; // 화면에 보이기 좋게 시각적 스케일링
+                        draw_ui_circle(&self.core.device, &mut pass, [cx, cy], radius, color);
+                    }
+                    ui::ButtonKind::Tool(tool) => {
+                        // 선택되면 선택된 색상으로, 아니면 회색
+                        let color = if b.selected { self.pen_color } else { [0.6, 0.6, 0.6, 1.0] };
+                        draw_tool_icon(&self.core.device, &mut pass, tool, b.rect, color);
+                    }
                 }
-                draw_ui_quad(&self.core.device, &mut pass, b.rect, b.color);
             }
 
             if self.tool == Tool::Eraser {
@@ -376,6 +389,82 @@ fn draw_selection_overlay(
                 );
             }
             // 핸들 없음 — 이동만 가능.
+        }
+    }
+}
+
+
+fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], radius: f32, color: [f32; 4]) {
+    let segments = 16;
+    let mut verts = Vec::with_capacity(segments * 3);
+    for i in 0..segments {
+        let a0 = i as f32 / segments as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
+        verts.push(Vertex { pos: center });
+        verts.push(Vertex { pos: [center[0] + radius * a0.cos(), center[1] + radius * a0.sin()] });
+        verts.push(Vertex { pos: [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()] });
+    }
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("ui_circle_vbuf"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let immediate = crate::render::pipeline::DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
+    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+    pass.set_vertex_buffer(0, vbuf.slice(..));
+    pass.draw(0..(segments as u32 * 3), 0..1);
+}
+
+fn draw_ui_triangle_inverted(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], size: f32, color: [f32; 4]) {
+    let hw = size * 0.5;
+    let verts = [
+        Vertex { pos: [center[0] - hw, center[1] - hw] }, // Top left
+        Vertex { pos: [center[0] + hw, center[1] - hw] }, // Top right
+        Vertex { pos: [center[0], center[1] + hw] },      // Bottom center
+    ];
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("ui_tri_vbuf"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let immediate = crate::render::pipeline::DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
+    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+    pass.set_vertex_buffer(0, vbuf.slice(..));
+    pass.draw(0..3, 0..1);
+}
+
+fn draw_tool_icon(device: &wgpu::Device, pass: &mut wgpu::RenderPass, tool: Tool, rect: ui::Rect, color: [f32; 4]) {
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    let s = rect.w * 0.35; // 아이콘 크기 스케일
+    let w = 2.0; // 선 두께
+    
+    match tool {
+        Tool::Pen => {
+            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx + s, cy - s], w, color); // 대각선 몸통
+            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx - s + 5.0, cy + s], w, color); // 펜촉 1
+            draw_screen_line_segment(device, pass, [cx - s, cy + s], [cx - s, cy + s - 5.0], w, color); // 펜촉 2
+        }
+        Tool::Eraser => {
+            let p0 = [cx - s, cy - s*0.6];
+            let p1 = [cx + s, cy - s*0.6];
+            let p2 = [cx + s, cy + s*0.6];
+            let p3 = [cx - s, cy + s*0.6];
+            draw_screen_line_segment(device, pass, p0, p1, w, color);
+            draw_screen_line_segment(device, pass, p1, p2, w, color);
+            draw_screen_line_segment(device, pass, p2, p3, w, color);
+            draw_screen_line_segment(device, pass, p3, p0, w, color);
+        }
+        Tool::Select => {
+            // 화살표(마우스 커서 모양)
+            let p0 = [cx - s*0.4, cy - s*0.7]; 
+            let p1 = [cx + s*0.6, cy + s*0.4]; 
+            let p2 = [cx, cy + s*0.2];         
+            let p3 = [cx - s*0.4, cy + s*0.8]; 
+            draw_screen_line_segment(device, pass, p0, p1, w, color);
+            draw_screen_line_segment(device, pass, p1, p2, w, color);
+            draw_screen_line_segment(device, pass, p2, p3, w, color);
+            draw_screen_line_segment(device, pass, p3, p0, w, color);
         }
     }
 }

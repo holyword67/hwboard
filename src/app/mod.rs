@@ -45,6 +45,7 @@ pub struct App {
     input: InputState,
     tool: Tool,
     pen_color: [f32; 4],
+    pen_width: f32,
     drawing_stroke: Option<Stroke>,
     /// Hold로 도형 인식이 성공하면 drawing_stroke 대신 여기로 옮겨져서
     /// 라이브 리사이즈/회전 프리뷰가 됨. Up 시점에 이게 Some이면 이걸
@@ -88,6 +89,7 @@ impl App {
             input: InputState::new(),
             tool: Tool::Pen,
             pen_color: ui::PALETTE[0],
+            pen_width: ui::THICKNESS_LEVELS[1],
             drawing_stroke: None,
             drawing_shape_preview: None,
             erasing_removed: Vec::new(),
