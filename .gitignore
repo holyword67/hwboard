@@ -1,0 +1,54 @@
+# Rust 빌드 결과물
+/target/
+**/*.rs.bk
+*.pdb
+
+# 빌드 결과물
+dist/
+dist-ssr/
+*.local
+
+# 환경 설정 파일
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS 관련
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 로그 파일
+*.log
+
+# 시뮬레이션 결과 파일 (자동 생성되므로 제외)
+microbe_simulation_*.json
+microbe_simulation_*.png
+
+# 임시 파일 및 백업
+*.tmp
+*.temp
+*.bak
+*_backup.rs
+*_old.rs
+
+# 시뮬레이션 output 폴더
+/output/
+
+# 기타 개인 설정
+CLAUDE.md
+SDL3.dll
+/lib/
