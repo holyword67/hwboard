@@ -103,6 +103,14 @@ impl App {
         self.tool = tool;
     }
 
+    pub fn wants_frequent_wake(&self) -> bool {
+        self.input.is_pen_down()
+    }
+
+    pub fn has_focus(&self) -> bool {
+        self.has_focus
+    }
+
     pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
         // 어떤 종류든 SDL 이벤트가 왔다는 것 자체가 "화면이 바뀔 수도
         // 있다"는 신호 — 개별 mutation 지점마다 dirty를 심는 대신 여기

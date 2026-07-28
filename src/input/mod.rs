@@ -98,6 +98,10 @@ impl InputState {
         self.last_pen_pos
     }
 
+    pub fn is_pen_down(&self) -> bool {
+        self.pointer_down && self.active_source == PointerSource::Pen
+    }
+
     pub fn process_event(&mut self, event: &Event) -> Option<InputEvent> {
         match event {
             Event::PenAxis { axis, value, .. } => {
