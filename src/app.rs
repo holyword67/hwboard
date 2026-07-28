@@ -5,7 +5,7 @@
 // 만난다. 메인 루프 오케스트레이터.
 
 use crate::gpu::core::GpuCore;
-use crate::input::{InputEvent, InputState, PointerEvent, PEN_BUTTON_REDO, PEN_BUTTON_UNDO};
+use crate::input::{InputEvent, InputState, PointerEvent};
 use crate::render::camera::Camera;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::pipeline::{DrawImmediate, GlobalUniforms, StrokePipeline, Vertex};
@@ -131,13 +131,13 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
     fn handle_input_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::Pointer(p) => self.handle_pointer(p),
-            InputEvent::PenButton { button, pressed: true } if button == PEN_BUTTON_UNDO => {
+            InputEvent::MouseSideButton { button: sdl3::mouse::MouseButton::X1, pressed: true } => {
                 self.undo_stack.undo(&mut self.scene);
             }
-            InputEvent::PenButton { button, pressed: true } if button == PEN_BUTTON_REDO => {
+            InputEvent::MouseSideButton { button: sdl3::mouse::MouseButton::X2, pressed: true } => {
                 self.undo_stack.redo(&mut self.scene);
             }
-            InputEvent::PenButton { .. } => {}
+            InputEvent::MouseSideButton { .. } => {}
         }
     }
 

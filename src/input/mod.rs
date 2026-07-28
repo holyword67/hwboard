@@ -35,11 +35,6 @@ fn is_pen_synthesized(which: u32) -> bool {
     which == SDL_PEN_MOUSEID.0
 }
 
-/// [미검증 가설] 실제 펜 연결 후 PenButtonDown 로그 찍어서 확인 필요.
-/// 값이 다르면 이 두 상수만 고치면 됨 — 다른 코드는 안 건드려도 됨.
-pub const PEN_BUTTON_UNDO: u8 = 1;
-pub const PEN_BUTTON_REDO: u8 = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InputSample {
     pub pos: [f32; 2],
@@ -57,9 +52,7 @@ pub enum PointerEvent {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputEvent {
     Pointer(PointerEvent),
-    /// 펜대 옆 버튼. `pressed: false`(뗄 때)는 지금 스코프에선 안 쓰지만,
-    /// 나중에 "누르고 있는 동안만" 류의 기능 붙일 걸 대비해 같이 넘김.
-    PenButton { button: u8, pressed: bool },
+    MouseSideButton { button: MouseButton, pressed: bool },
 }
 
 pub struct InputState {
@@ -98,20 +91,19 @@ impl InputState {
             Event::PenUp { x, y, .. } => {
                 Some(InputEvent::Pointer(self.end(*x, *y, self.last_pressure)))
             }
-            // barrel 버튼 — 눌리는 순간만 동작으로 취급(뗄 때는 pressed:false로
-            // 넘기되, undo/redo 트리거는 app 레이어에서 pressed:true만 반응).
-            Event::PenButtonDown { button, .. } => {
-                Some(InputEvent::PenButton { button: *button, pressed: true })
-            }
-            Event::PenButtonUp { button, .. } => {
-                Some(InputEvent::PenButton { button: *button, pressed: false })
-            }
+
 
             Event::MouseButtonDown { mouse_btn: MouseButton::Left, which, x, y, .. } => {
                 if is_pen_synthesized(*which) {
                     return None; // 펜이 이미 PenDown으로 처리됨 — 중복 무시
                 }
                 Some(InputEvent::Pointer(self.begin(*x, *y, 1.0)))
+            }
+            Event::MouseButtonDown { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
+                Some(InputEvent::MouseSideButton { button: *btn, pressed: true })
+            }
+            Event::MouseButtonUp { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
+                Some(InputEvent::MouseSideButton { button: *btn, pressed: false })
             }
             Event::MouseMotion { which, x, y, .. } => {
                 if is_pen_synthesized(*which) {
