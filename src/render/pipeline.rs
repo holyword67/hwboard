@@ -40,6 +40,10 @@ pub struct Vertex {
 pub struct StrokePipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub global_bind_group: wgpu::BindGroup,
+    /// UiPipeline이 같은 레이아웃으로 파이프라인을 만들 때 재사용 —
+    /// 같은 BindGroupLayout 객체를 공유하면 global_bind_group을 두
+    /// 파이프라인 모두에서 그대로 쓸 수 있음(중복 생성 불필요).
+    pub global_bgl: wgpu::BindGroupLayout,
 }
 
 impl StrokePipeline {
@@ -112,6 +116,6 @@ impl StrokePipeline {
             cache: None,
         });
 
-        Self { pipeline, global_bind_group }
+        Self { pipeline, global_bind_group, global_bgl }
     }
 }

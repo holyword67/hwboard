@@ -6,18 +6,19 @@
 
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState, PointerEvent, PEN_BUTTON_REDO, PEN_BUTTON_UNDO};
-use sdl3::keyboard::Keycode;
 use crate::render::camera::Camera;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::pipeline::{DrawImmediate, GlobalUniforms, StrokePipeline, Vertex};
 use crate::render::tessellate::tessellate_stroke;
+use crate::render::ui_pipeline::UiPipeline;
 use crate::scene::{AddItem, CanvasItem, DeleteItems, ItemId, PenPoint, Scene, Stroke, UndoStack};
+use crate::ui::{self, UiAction};
 use sdl3::event::Event;
+use sdl3::keyboard::Keycode;
 use sdl3::video::Window;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
-const PEN_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const PEN_BASE_WIDTH: f32 = 3.0;
 /// [미검증 가설] world 단위 고정 반경 — zoom에 따라 스크린상 크기가
 /// 달라짐(확대하면 지우개가 스크린상 커 보임). 줌 불변으로 할지는
@@ -33,14 +34,19 @@ pub enum Tool {
 pub struct App {
     core: GpuCore,
     pipeline: StrokePipeline,
+    ui_pipeline: UiPipeline,
     registry: GpuResourceRegistry,
     scene: Scene,
     undo_stack: UndoStack,
     camera: Camera,
     input: InputState,
     tool: Tool,
+    pen_color: [f32; 4],
     drawing_stroke: Option<Stroke>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
+    /// UI 버튼을 누르는 동안 캔버스 그리기/지우기 로직이 반응하지
+    /// 않도록 하는 플래그. Down이 UI를 맞히면 true, Up에서 false.
+    pointer_captured_by_ui: bool,
     is_fullscreen: bool,
     open: bool,
 }
@@ -49,18 +55,23 @@ impl App {
     pub async fn new(window: &Window) -> Self {
         let core = GpuCore::new(window).await;
         let pipeline = StrokePipeline::new(&core);
+        let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
         let (w, h) = window.size();
         Self {
             core,
             pipeline,
+            ui_pipeline,
             registry: GpuResourceRegistry::new(),
             scene: Scene::new(),
             undo_stack: UndoStack::new(),
             camera: Camera::new([w as f32, h as f32]),
             input: InputState::new(),
             tool: Tool::Pen,
+            pen_color: ui::PALETTE[0],
             drawing_stroke: None,
             erasing_removed: Vec::new(),
+            pointer_captured_by_ui: false,
+            is_fullscreen: false,
             open: true,
         }
     }
@@ -131,12 +142,34 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
     }
 
     fn handle_pointer(&mut self, ev: PointerEvent) {
+        // UI 버튼 히트테스트가 캔버스 그리기/지우기보다 항상 먼저 —
+        // Down이 버튼을 맞히면 여기서 소비하고 끝. 버튼 누른 채로 캔버스
+        // 쪽으로 드래그하는 엣지케이스(예: 버튼 누르고 안 떼고 캔버스로
+        // 이동)는 지금 pointer_captured_by_ui로 막아두긴 했는데, 실제
+        // 사용성 확인 전까진 미검증.
+        if let PointerEvent::Down(s) = ev {
+            if let Some(action) = ui::hit_test(s.pos, self.camera.viewport_size, self.tool, self.pen_color) {
+                self.pointer_captured_by_ui = true;
+                match action {
+                    UiAction::SelectTool(t) => self.tool = t,
+                    UiAction::SelectColor(c) => self.pen_color = c,
+                }
+                return;
+            }
+        }
+        if self.pointer_captured_by_ui {
+            if let PointerEvent::Up(_) = ev {
+                self.pointer_captured_by_ui = false;
+            }
+            return;
+        }
+
         match (self.tool, ev) {
             (Tool::Pen, PointerEvent::Down(s)) => {
                 let world = self.camera.screen_to_world(s.pos);
                 self.drawing_stroke = Some(Stroke {
                     points: vec![PenPoint { pos: world, pressure: s.pressure }],
-                    color: PEN_COLOR,
+                    color: self.pen_color,
                     base_width: PEN_BASE_WIDTH,
                     mesh_dirty: true,
                 });
@@ -299,9 +332,52 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
                     pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
                 }
             }
+
+            // UI 오버레이 — 캔버스 다음에 그려서 항상 위에 보이게.
+            pass.set_pipeline(&self.ui_pipeline.pipeline);
+            pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
+
+            let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color);
+            for b in &buttons {
+                if b.selected {
+                    let hl = ui::Rect {
+                        x: b.rect.x - ui::HIGHLIGHT_PADDING,
+                        y: b.rect.y - ui::HIGHLIGHT_PADDING,
+                        w: b.rect.w + ui::HIGHLIGHT_PADDING * 2.0,
+                        h: b.rect.h + ui::HIGHLIGHT_PADDING * 2.0,
+                    };
+                    draw_ui_quad(&self.core.device, &mut pass, hl, ui::HIGHLIGHT_COLOR);
+                }
+                draw_ui_quad(&self.core.device, &mut pass, b.rect, b.color);
+            }
         }
 
         self.core.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
     }
+}
+
+
+/// UI 버튼 하나를 사각형(삼각형 2개, 인덱스버퍼 없이 정점 6개)으로 그림.
+/// 캔버스 스트로크와 달리 버튼은 개수가 적고(6개) 정적이라 매 프레임
+/// 버퍼 새로 만들어도 비용 무시할 만함.
+fn draw_ui_quad(device: &wgpu::Device, pass: &mut wgpu::RenderPass, rect: ui::Rect, color: [f32; 4]) {
+    let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
+    let verts = [
+        Vertex { pos: [x0, y0] },
+        Vertex { pos: [x1, y0] },
+        Vertex { pos: [x0, y1] },
+        Vertex { pos: [x1, y0] },
+        Vertex { pos: [x1, y1] },
+        Vertex { pos: [x0, y1] },
+    ];
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("ui_quad_vbuf"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
+    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+    pass.set_vertex_buffer(0, vbuf.slice(..));
+    pass.draw(0..6, 0..1);
 }

@@ -6,6 +6,7 @@ mod gpu;
 mod input;
 mod render;
 mod scene;
+mod ui;
 
 use app::App;
 
