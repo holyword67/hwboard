@@ -20,10 +20,20 @@
 use sdl3::event::Event;
 use sdl3::mouse::MouseButton;
 use sdl3::pen::PenAxis;
+use sdl3::sys::pen::SDL_PEN_MOUSEID;
 use std::time::{Duration, Instant};
 
 const HOLD_DURATION: Duration = Duration::from_millis(400);
 const MOVE_JITTER_PX: f32 = 3.0;
+
+/// SDL은 펜 입력이 들어오면 호환성을 위해 "이 펜 입력을 흉내 낸 가짜
+/// 마우스 이벤트"도 같이 쏴줌 — which 필드가 이 값이면 진짜 마우스가
+/// 아니라 펜에서 합성된 이벤트. 이걸 안 걸러내면 PenMotion 스트림이랑
+/// 가짜 MouseMotion 스트림이 같은 스트로크에 섞여서 좌표가 튀는 버그가
+/// 생김 (실제로 겪은 버그).
+fn is_pen_synthesized(which: u32) -> bool {
+    which == SDL_PEN_MOUSEID.0
+}
 
 /// [미검증 가설] 실제 펜 연결 후 PenButtonDown 로그 찍어서 확인 필요.
 /// 값이 다르면 이 두 상수만 고치면 됨 — 다른 코드는 안 건드려도 됨.
@@ -97,17 +107,26 @@ impl InputState {
                 Some(InputEvent::PenButton { button: *button, pressed: false })
             }
 
-            Event::MouseButtonDown { mouse_btn: MouseButton::Left, x, y, .. } => {
+            Event::MouseButtonDown { mouse_btn: MouseButton::Left, which, x, y, .. } => {
+                if is_pen_synthesized(*which) {
+                    return None; // 펜이 이미 PenDown으로 처리됨 — 중복 무시
+                }
                 Some(InputEvent::Pointer(self.begin(*x, *y, 1.0)))
             }
-            Event::MouseMotion { x, y, .. } => {
+            Event::MouseMotion { which, x, y, .. } => {
+                if is_pen_synthesized(*which) {
+                    return None;
+                }
                 if self.pointer_down {
                     self.moved(*x, *y, 1.0).map(InputEvent::Pointer)
                 } else {
                     None
                 }
             }
-            Event::MouseButtonUp { mouse_btn: MouseButton::Left, x, y, .. } => {
+            Event::MouseButtonUp { mouse_btn: MouseButton::Left, which, x, y, .. } => {
+                if is_pen_synthesized(*which) {
+                    return None;
+                }
                 Some(InputEvent::Pointer(self.end(*x, *y, 1.0)))
             }
             _ => None,
