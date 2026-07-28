@@ -66,27 +66,3 @@ pub(super) fn draw_screen_line_segment(
     pass.set_vertex_buffer(0, vbuf.slice(..));
     pass.draw(0..6, 0..1);
 }
-
-/// [미사용 — 예전 UI 디자인 잔재로 추정] 현재 어디서도 호출되지 않음.
-/// 삭제 여부는 별도 정리 작업에서 결정(이번 모듈화 스코프 아님).
-#[allow(dead_code)]
-pub(super) fn draw_ui_circle(device: &wgpu::Device, pass: &mut wgpu::RenderPass, center: [f32; 2], radius: f32, color: [f32; 4]) {
-    let segments = 16;
-    let mut verts = Vec::with_capacity(segments * 3);
-    for i in 0..segments {
-        let a0 = i as f32 / segments as f32 * std::f32::consts::TAU;
-        let a1 = (i + 1) as f32 / segments as f32 * std::f32::consts::TAU;
-        verts.push(Vertex { pos: center });
-        verts.push(Vertex { pos: [center[0] + radius * a0.cos(), center[1] + radius * a0.sin()] });
-        verts.push(Vertex { pos: [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()] });
-    }
-    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("ui_circle_vbuf"),
-        contents: bytemuck::cast_slice(&verts),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color };
-    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-    pass.set_vertex_buffer(0, vbuf.slice(..));
-    pass.draw(0..(segments as u32 * 3), 0..1);
-}
