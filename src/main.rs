@@ -2,6 +2,7 @@
 // src/main.rs
 // ============================================================
 mod app;
+mod clipboard;
 mod gpu;
 mod input;
 mod render;

@@ -61,6 +61,10 @@ pub struct InputState {
     last_significant_pos: [f32; 2],
     last_move_at: Instant,
     hold_fired: bool,
+    /// 그리는 중이 아니어도 항상 최신값으로 유지 — Ctrl+V 붙여넣기
+    /// 위치 결정용(펜/마우스 눌림과 무관하게 "지금 커서가 어디 있나"가
+    /// 필요해서 pointer_down 게이트 없이 갱신).
+    last_known_pos: [f32; 2],
 }
 
 impl InputState {
@@ -71,7 +75,12 @@ impl InputState {
             last_significant_pos: [0.0, 0.0],
             last_move_at: Instant::now(),
             hold_fired: false,
+            last_known_pos: [0.0, 0.0],
         }
+    }
+
+    pub fn last_known_pos(&self) -> [f32; 2] {
+        self.last_known_pos
     }
 
     pub fn process_event(&mut self, event: &Event) -> Option<InputEvent> {
@@ -86,6 +95,7 @@ impl InputState {
                 Some(InputEvent::Pointer(self.begin(*x, *y, self.last_pressure)))
             }
             Event::PenMotion { x, y, .. } => {
+                self.last_known_pos = [*x, *y];
                 self.moved(*x, *y, self.last_pressure).map(InputEvent::Pointer)
             }
             Event::PenUp { x, y, .. } => {
@@ -109,6 +119,7 @@ impl InputState {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
+                self.last_known_pos = [*x, *y];
                 if self.pointer_down {
                     self.moved(*x, *y, 1.0).map(InputEvent::Pointer)
                 } else {

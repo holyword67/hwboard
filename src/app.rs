@@ -4,18 +4,21 @@
 // WgpuRenderer 대응 — 모든 조각(camera/input/scene/render)이 여기서
 // 만난다. 메인 루프 오케스트레이터.
 
+use crate::clipboard::read_clipboard_image_bytes;
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState, PointerEvent};
 use crate::render::camera::Camera;
 use crate::render::gpu_resources::GpuResourceRegistry;
+use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::{DrawImmediate, GlobalUniforms, StrokePipeline, Vertex};
 use crate::render::tessellate::tessellate_stroke;
 use crate::render::ui_pipeline::UiPipeline;
-use crate::scene::{AddItem, CanvasItem, DeleteItems, ItemId, PenPoint, Scene, Stroke, UndoStack};
+use crate::scene::{AddItem, CanvasItem, DeleteItems, ImageItem, ItemId, PenPoint, Scene, Stroke, UndoStack};
 use crate::ui::{self, UiAction};
 use sdl3::event::Event;
-use sdl3::keyboard::Keycode;
+use sdl3::keyboard::{Keycode, Mod};
 use sdl3::video::Window;
+use std::sync::Arc;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
@@ -35,6 +38,7 @@ pub struct App {
     core: GpuCore,
     pipeline: StrokePipeline,
     ui_pipeline: UiPipeline,
+    image_pipeline: ImagePipeline,
     registry: GpuResourceRegistry,
     scene: Scene,
     undo_stack: UndoStack,
@@ -56,11 +60,13 @@ impl App {
         let core = GpuCore::new(window).await;
         let pipeline = StrokePipeline::new(&core);
         let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
+        let image_pipeline = ImagePipeline::new(&core, &pipeline.global_bgl);
         let (w, h) = window.size();
         Self {
             core,
             pipeline,
             ui_pipeline,
+            image_pipeline,
             registry: GpuResourceRegistry::new(),
             scene: Scene::new(),
             undo_stack: UndoStack::new(),
@@ -95,8 +101,8 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
                 self.core.resize(*w as u32, *h as u32);
                 self.camera.resize([*w as f32, *h as f32]);
             }
-            Event::KeyDown { keycode: Some(kc), repeat: false, .. } => {
-                self.handle_key(*kc, window)
+            Event::KeyDown { keycode: Some(kc), keymod, repeat: false, .. } => {
+                self.handle_key(*kc, *keymod, window)
             }
             Event::MouseWheel { y, mouse_x, mouse_y, .. } => {
                 let factor = 1.0 + y * 0.1;
@@ -113,7 +119,8 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
     /// 키보드 단축키 — 언두/리두는 펜 barrel 버튼이랑 중복 할당(입력
     /// 수단 다를 뿐 같은 undo_stack을 씀). `repeat: false`로 걸러서
     /// 키 꾹 누르고 있을 때 undo가 프레임마다 연타되는 것 방지.
-    fn handle_key(&mut self, kc: Keycode, window: &mut Window) {
+    fn handle_key(&mut self, kc: Keycode, keymod: Mod, window: &mut Window) {
+        let ctrl = keymod.contains(Mod::LCTRLMOD) || keymod.contains(Mod::RCTRLMOD);
         match kc {
             Keycode::Backspace => self.undo_stack.undo(&mut self.scene),
             Keycode::Equals => self.undo_stack.redo(&mut self.scene),
@@ -121,8 +128,40 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
                 self.is_fullscreen = !self.is_fullscreen;
                 let _ = window.set_fullscreen(self.is_fullscreen);
             }
+            Keycode::V if ctrl => self.paste_image_from_clipboard(),
             _ => {}
         }
+    }
+
+    fn paste_image_from_clipboard(&mut self) {
+        let Some(bytes) = read_clipboard_image_bytes() else {
+            eprintln!(
+                "[paste] 클립보드에서 지원하는 이미지 형식(png/bmp/webp/jpeg/gif)을 찾지 못했습니다 — 다른 형식으로 복사해서 다시 시도해 주세요."
+            );
+            return;
+        };
+        let img = match image::load_from_memory(&bytes) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("[paste] 이미지 디코딩 실패: {e}");
+                return;
+            }
+        };
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let cursor_world = self.camera.screen_to_world(self.input.last_known_pos());
+        let top_left = [cursor_world[0] - w as f64 / 2.0, cursor_world[1] - h as f64 / 2.0];
+
+        let id = self.scene.alloc_id();
+        let item = CanvasItem::Image(ImageItem {
+            top_left,
+            size: [w as f64, h as f64],
+            pixel_width: w,
+            pixel_height: h,
+            rgba: Arc::from(rgba.into_raw()),
+        });
+        let cmd = Box::new(AddItem { id, item });
+        self.undo_stack.execute(cmd, &mut self.scene);
     }
 
     /// 매 프레임 호출 — hold(도형 자동스냅) 폴링.
@@ -242,7 +281,6 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
     }
 
     pub fn render(&mut self) {
-        self.registry.sync(&self.core, &mut self.scene);
 
         let uniforms = GlobalUniforms {
             zoom: self.camera.zoom,
@@ -281,24 +319,60 @@ pub fn handle_sdl_event(&mut self, event: &Event, window: &mut Window) {
                 multiview_mask: None,
             });
 
+            self.registry.sync(&self.core, &self.image_pipeline, &mut self.scene);
+
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
+            let mut on_stroke_pipeline = true;
 
             for (id, item) in self.scene.iter_ordered_with_id() {
-                let CanvasItem::Stroke(s) = item else {
-                    continue; // TODO: Shape/Text/Image draw — 다음 단계
-                };
-                let Some(res) = self.registry.get_stroke(id) else { continue };
+                match item {
+                    CanvasItem::Stroke(s) => {
+                        let Some(res) = self.registry.get_stroke(id) else { continue };
+                        if !on_stroke_pipeline {
+                            pass.set_pipeline(&self.pipeline.pipeline);
+                            pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
+                            on_stroke_pipeline = true;
+                        }
+                        let offset = [
+                            (res.origin[0] - self.camera.center[0]) as f32,
+                            (res.origin[1] - self.camera.center[1]) as f32,
+                        ];
+                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: s.color };
+                        pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                        pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
+                        pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..res.index_count, 0, 0..1);
+                    }
+                    CanvasItem::Image(_) => {
+                        let Some(res) = self.registry.get_image(id) else { continue };
+                        if on_stroke_pipeline {
+                            pass.set_pipeline(&self.image_pipeline.pipeline);
+                            pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
+                            on_stroke_pipeline = false;
+                        }
+                        pass.set_bind_group(1, &res.bind_group, &[]);
+                        let offset = [
+                            (res.origin[0] - self.camera.center[0]) as f32,
+                            (res.origin[1] - self.camera.center[1]) as f32,
+                        ];
+                        let immediate =
+                            DrawImmediate { offset, _pad: [0.0; 2], color: [1.0, 1.0, 1.0, 1.0] };
+                        pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                        pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
+                        pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..6, 0, 0..1);
+                    }
+                    _ => {} // Shape/Text 미구현
+                }
+            }
 
-                let offset = [
-                    (res.origin[0] - self.camera.center[0]) as f32,
-                    (res.origin[1] - self.camera.center[1]) as f32,
-                ];
-                let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: s.color };
-                pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-                pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
-                pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..res.index_count, 0, 0..1);
+            // 이후 pass 안에서 stroke_pipeline을 다시 쓰는 지점(그리는 중인
+            // 스트로크, UI 오버레이)들이 있으니 마지막 상태를 stroke로
+            // 되돌려둠.
+            if !on_stroke_pipeline {
+                pass.set_pipeline(&self.pipeline.pipeline);
+                pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             }
 
             // 그리는 중인 스트로크 — registry 캐싱 없이 매 프레임 즉석

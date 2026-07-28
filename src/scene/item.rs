@@ -33,8 +33,14 @@ pub struct Stroke {
 #[derive(Debug, Clone)]
 pub struct ImageItem {
     pub top_left: [f64; 2],
-    pub size: [f64; 2],
-    pub texture_handle: u32, // GPU 텍스처 레지스트리 인덱스 (render 모듈이 관리)
+    pub size: [f64; 2], // world 크기 = 붙여넣을 때 픽셀 크기 그대로
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    /// RGBA8 원본 픽셀. Arc로 감싸서, DeleteItems가 undo용으로
+    /// CanvasItem을 통째로 clone할 때마다 수 MB를 복사하지 않게 함 —
+    /// 이건 이미지 크기가 크면 확실히 발생하는 비용이라 가설이 아니라
+    /// 처음부터 막아둔 것.
+    pub rgba: std::sync::Arc<[u8]>,
 }
 
 #[derive(Debug, Clone)]
