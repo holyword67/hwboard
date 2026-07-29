@@ -51,10 +51,29 @@ fn vs_main(
 fn capsule_sdf(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, ra: f32, rb: f32) -> f32 {
     let ab = b - a;
     let len_sq = dot(ab, ab);
-    var t: f32 = 0.0;
-    if (len_sq > 1e-8) {
-        t = clamp(dot(p - a, ab) / len_sq, 0.0, 1.0);
+
+    if (len_sq < 1e-8) {
+        // 시작점(dot) — 세그먼트 길이 0, 그냥 원.
+        return length(p - a) - rb;
     }
+
+    let len = sqrt(len_sq);
+    let dir = ab / len;
+    let rel = p - a;
+    let along = dot(rel, dir);
+
+    if (along <= 0.0) {
+        // A 이전 구간 — flat cap(평평하게 자름). 이 세그먼트의 A는
+        // 항상 "직전 세그먼트의 B(라운드 캡)"와 같은 점이라, 거기서
+        // 이미 원을 그리고 있음 — 여기서 또 그리면 관절에서 AA가 두 번
+        // 겹쳐 블렌딩되면서 규칙적인 돌기로 보임(실측으로 확인됨).
+        // 그래서 A쪽은 평평하게 잘라서 중복 커버리지를 없앰.
+        let perp = rel - along * dir;
+        let perp_excess = max(length(perp) - ra, 0.0);
+        return length(vec2<f32>(along, perp_excess));
+    }
+
+    let t = clamp(along / len, 0.0, 1.0);
     let closest = a + ab * t;
     let r = mix(ra, rb, t);
     return length(p - closest) - r;
