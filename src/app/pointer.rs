@@ -9,10 +9,13 @@ use crate::ui::{self, UiAction};
 
 pub(super) const ERASER_RADIUS_SCREEN_PX: f32 = 12.0;
 /// [미검증 가설] 자유획 점 디시메이션 문턱값 — 직전에 실제로 채택된
-/// 점과 스크린상 이 거리 미만이면 점 자체를 안 늘림. 화면상 거리를
-/// 바로 비교하므로 zoom 환산 불필요. 실사용 후(획 디테일 손실 체감)
-/// 조정 대상.
+/// 점과 스크린상 이 거리 미만이면 점 자체를 안 늘림.
 const STROKE_POINT_MIN_DISTANCE_SCREEN_PX: f32 = 2.0;
+/// [미검증 가설] 경로 스무딩용 3점 가중 이동평균 가중치(좌/중/우).
+/// 관절의 라운드 조인이 미세한 폴리라인 꺾임 때문에 튀어나오는 문제를
+/// 완화하려고 도입 — 과하게 세게 걸면 의도된 뾰족한 코너(숫자/기호
+/// 필기)까지 뭉개지므로 가볍게만.
+const SMOOTHING_WEIGHTS: [f64; 3] = [0.25, 0.5, 0.25];
 
 impl App {
 pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
@@ -24,7 +27,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     UiAction::SelectColor(c) => self.pen_color = c,
                     UiAction::SelectThickness(w) => self.pen_width = w,
                 }
-                self.ui_dirty = true; // 도구함 재조립 필요(도구/색/두께 변경)
+                self.ui_dirty = true;
                 return;
             }
         }
@@ -41,8 +44,6 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// 마우스: Select 도구일 땐 select.rs로 위임(선택/이동/리사이즈/
-    /// 회전). 그 외 도구(Pen/Eraser)일 땐 원래대로 팬 전용.
     fn handle_mouse_pointer(&mut self, ev: PointerEvent) {
         if self.tool == Tool::Select {
             self.handle_select_pointer(ev);
@@ -65,8 +66,6 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// 펜: Select 도구일 땐 완전히 비활성(설계 결정 — 선택/이동/
-    /// 리사이즈/회전은 마우스 전용). 그 외엔 원래대로 그리기/지우기.
     fn handle_pen_pointer(&mut self, ev: PointerEvent) {
         if self.tool == Tool::Select {
             return;
@@ -77,21 +76,24 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 self.drawing_shape_preview = None;
                 let world = self.camera.screen_to_world(s.pos);
                 self.drawing_stroke = Some(Stroke {
-                    points: vec![PenPoint { pos: world, pressure: s.pressure }],
+                    points: Vec::new(),
                     color: self.pen_color,
                     base_width: self.pen_width,
                     mesh_dirty: true,
                 });
-
-                // 점진 테셀레이션 캐시도 같이 시작 — 첫 점을 즉시 스탬프.
-                let mut mesh_cache = IncrementalStrokeMesh::new(world);
-                let half_width = self.pen_width * s.pressure.max(0.05) * 0.5;
-                mesh_cache.push_point(world, half_width);
-                self.drawing_mesh_cache = Some(mesh_cache);
+                self.drawing_mesh_cache = Some(IncrementalStrokeMesh::new(world));
                 self.drawing_stroke_last_screen_pos = Some(s.pos);
                 if let Some(live) = &mut self.live_stroke_gpu {
-                    live.reset(); // 버퍼는 재사용, GPU 동기화 카운터만 리셋
+                    live.reset();
                 }
+
+                // 새 획 시작 — 스무딩 버퍼 리셋. 첫 점(앵커)은 스무딩 없이
+                // 즉시 확정(펜 닿자마자 dot이 바로 보이도록).
+                self.smoother_prev2 = None;
+                self.smoother_prev1_pending = false;
+                let p0 = PenPoint { pos: world, pressure: s.pressure };
+                self.push_finalized_point(p0.clone());
+                self.smoother_prev1 = Some(p0);
             }
             (Tool::Pen, PointerEvent::Move(s)) => {
                 let world = self.camera.screen_to_world(s.pos);
@@ -130,7 +132,8 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 }
 
                 // 디시메이션: 직전 채택 점과 스크린상 너무 가까우면 점
-                // 자체를 안 늘림(입력단에서 n 증가를 억제).
+                // 자체를 안 늘림. 스무딩은 이걸 통과한 점에 대해서만
+                // 적용됨(둘은 독립된 단계).
                 if let Some(last_pos) = self.drawing_stroke_last_screen_pos {
                     let dx = s.pos[0] - last_pos[0];
                     let dy = s.pos[1] - last_pos[1];
@@ -140,16 +143,20 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 }
                 self.drawing_stroke_last_screen_pos = Some(s.pos);
 
-                if let Some(stroke) = &mut self.drawing_stroke {
-                    stroke.points.push(PenPoint { pos: world, pressure: s.pressure });
-                    let half_width = stroke.base_width * s.pressure.max(0.05) * 0.5;
-                    if let Some(mesh_cache) = &mut self.drawing_mesh_cache {
-                        mesh_cache.push_point(world, half_width);
-                    }
-                }
+                self.feed_smoother(PenPoint { pos: world, pressure: s.pressure });
             }
             (Tool::Pen, PointerEvent::Up(_)) => {
                 self.snap_state = None;
+                // 스무딩 대기 중이던 마지막 점(오른쪽 이웃이 없어 평활
+                // 확정 못 했던 꼬리) — 원본 그대로 흘려보냄.
+                if self.smoother_prev1_pending {
+                    if let Some(tail) = self.smoother_prev1.take() {
+                        self.push_finalized_point(tail);
+                    }
+                }
+                self.smoother_prev2 = None;
+                self.smoother_prev1 = None;
+                self.smoother_prev1_pending = false;
                 self.drawing_mesh_cache = None;
                 self.drawing_stroke_last_screen_pos = None;
                 if let Some(shape) = self.drawing_shape_preview.take() {
@@ -170,7 +177,10 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     if let Some((shape, snap_data)) = super::shapes::recognize_shape(stroke) {
                         self.drawing_shape_preview = Some(shape);
                         self.drawing_stroke = None;
-                        self.drawing_mesh_cache = None; // 도형으로 스냅됐으니 자유획 캐시는 폐기
+                        self.drawing_mesh_cache = None;
+                        self.smoother_prev2 = None;
+                        self.smoother_prev1 = None;
+                        self.smoother_prev1_pending = false;
                         self.snap_state = Some(snap_data);
                     }
                 }
@@ -192,9 +202,54 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     self.undo_stack.push_already_applied(cmd);
                 }
             }
-            // Tool::Select 조합은 함수 상단에서 이미 걸러져서 도달 안 함.
-            // 나머지 Hold 조합(Eraser+Hold 등)도 여기서 무시.
             _ => {}
+        }
+    }
+
+    /// 새 raw 점을 스무딩 슬라이딩 윈도우에 흘려넣음. 윈도우(직전-직전,
+    /// 직전, 지금)가 다 찼을 때만 "직전" 점의 평활 위치를 확정해서
+    /// push — 1점 지연 append. 윈도우 안 찬 상태(획 시작 직후)는
+    /// 슬라이드만 하고 아직 아무것도 push 안 함.
+    fn feed_smoother(&mut self, raw: PenPoint) {
+        match (self.smoother_prev2, self.smoother_prev1.clone()) {
+            (Some(a), Some(b)) => {
+                let smoothed_pos = [
+                    SMOOTHING_WEIGHTS[0] * a[0] + SMOOTHING_WEIGHTS[1] * b.pos[0] + SMOOTHING_WEIGHTS[2] * raw.pos[0],
+                    SMOOTHING_WEIGHTS[0] * a[1] + SMOOTHING_WEIGHTS[1] * b.pos[1] + SMOOTHING_WEIGHTS[2] * raw.pos[1],
+                ];
+                self.push_finalized_point(PenPoint { pos: smoothed_pos, pressure: b.pressure });
+                self.smoother_prev2 = Some(b.pos);
+                self.smoother_prev1 = Some(raw);
+                self.smoother_prev1_pending = true;
+            }
+            (None, Some(b)) => {
+                // 윈도우 부족(획의 두 번째 점) — b는 이미 앵커로 push된
+                // 상태라 다시 확정할 필요 없음, 슬라이드만.
+                self.smoother_prev2 = Some(b.pos);
+                self.smoother_prev1 = Some(raw);
+                self.smoother_prev1_pending = true;
+            }
+            (_, None) => {
+                // Down이 항상 prev1을 세팅하므로 이론상 도달 안 함.
+                self.smoother_prev1 = Some(raw);
+                self.smoother_prev1_pending = true;
+            }
+        }
+    }
+
+    /// 확정된 점(스무딩 완료 또는 앵커) 하나를 stroke.points와
+    /// mesh_cache 양쪽에 동시 반영.
+    fn push_finalized_point(&mut self, point: PenPoint) {
+        let half_width = match &mut self.drawing_stroke {
+            Some(stroke) => {
+                let hw = stroke.base_width * point.pressure.max(0.05) * 0.5;
+                stroke.points.push(point.clone());
+                hw
+            }
+            None => return,
+        };
+        if let Some(mesh_cache) = &mut self.drawing_mesh_cache {
+            mesh_cache.push_point(point.pos, half_width);
         }
     }
 

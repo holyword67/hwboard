@@ -94,3 +94,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(im.color.rgb, im.color.a * alpha);
 }
+
+
+fn hash_color(p: vec2<f32>) -> vec3<f32> {
+    let h = fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let h2 = fract(sin(dot(p, vec2<f32>(93.9898, 67.345))) * 24634.6345);
+    let h3 = fract(sin(dot(p, vec2<f32>(41.9898, 289.233))) * 15731.7431);
+    return vec3<f32>(h, h2, h3);
+}

@@ -15,7 +15,7 @@ use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::StrokePipeline;
 use crate::render::ui_pipeline::UiPipeline;
-use crate::scene::{CanvasItem, ItemId, Scene, Shape, Stroke, UndoStack};
+use crate::scene::{CanvasItem, ItemId, PenPoint, Scene, Shape, Stroke, UndoStack};
 use crate::ui;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
@@ -63,6 +63,10 @@ pub struct App {
     /// 자유획 점 디시메이션 판정용 — 마지막으로 실제 채택된 점의
     /// 스크린 좌표.
     drawing_stroke_last_screen_pos: Option<[f32; 2]>,
+    /// 경로 스무딩용 슬라이딩 윈도우(1점 지연) — pointer.rs::feed_smoother 참고.
+    smoother_prev2: Option<[f64; 2]>,
+    smoother_prev1: Option<PenPoint>,
+    smoother_prev1_pending: bool,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
     eraser_pressed: bool,
     /// Tool::Select에서 현재 선택된 아이템.
@@ -115,6 +119,9 @@ impl App {
             drawing_shape_preview: None,
             drawing_mesh_cache: None,
             drawing_stroke_last_screen_pos: None,
+            smoother_prev2: None,
+            smoother_prev1: None,
+            smoother_prev1_pending: false,
             erasing_removed: Vec::new(),
             eraser_pressed: false,
             selected_item: None,
