@@ -22,7 +22,8 @@ use sdl3::mouse::MouseUtil;
 use sdl3::video::Window;
 use std::time::Instant;
 
-use render::UiCache;
+use crate::render::tessellate::IncrementalStrokeMesh;
+use render::{LiveStrokeGpu, UiCache};
 use select::SelectDrag;
 use shapes::SnapData;
 
@@ -54,6 +55,12 @@ pub struct App {
     /// CanvasItem::Shape로 커밋하고, None이면 drawing_stroke를 그대로
     /// Stroke로 커밋(자유필기).
     drawing_shape_preview: Option<Shape>,
+    /// 그리는 중인 자유획의 점진적 테셀레이션 캐시(CPU) — pointer.rs가
+    /// 점을 push할 때마다 같이 append됨. render()는 이걸 읽기만 함.
+    drawing_mesh_cache: Option<IncrementalStrokeMesh>,
+    /// 자유획 점 디시메이션 판정용 — 마지막으로 실제 채택된 점의
+    /// 스크린 좌표.
+    drawing_stroke_last_screen_pos: Option<[f32; 2]>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
     eraser_pressed: bool,
     /// Tool::Select에서 현재 선택된 아이템.
@@ -71,6 +78,9 @@ pub struct App {
     has_focus: bool,
     ui_dirty: bool,
     ui_cache: Option<UiCache>,
+    /// 그리는 중인 자유획 전용 growable GPU 버퍼 — 스트로크가 끝나도
+    /// 안 버리고 재사용(다음 획에서 synced 카운터만 리셋).
+    live_stroke_gpu: Option<LiveStrokeGpu>,
     mouse: MouseUtil,
 }
 
@@ -99,6 +109,8 @@ impl App {
             pen_width: ui::THICKNESS_LEVELS[1],
             drawing_stroke: None,
             drawing_shape_preview: None,
+            drawing_mesh_cache: None,
+            drawing_stroke_last_screen_pos: None,
             erasing_removed: Vec::new(),
             eraser_pressed: false,
             selected_item: None,
@@ -113,6 +125,7 @@ impl App {
             has_focus: true,
             ui_dirty: true,
             ui_cache: None,
+            live_stroke_gpu: None,
             mouse,
         }
     }

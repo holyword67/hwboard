@@ -4,6 +4,13 @@
 // Stroke(포인트+압력 리스트) -> 렌더용 삼각형 메시 변환.
 // "포인트마다 원을 찍고, 연속된 포인트 사이는 사각형으로 잇는다" 방식
 // (stamped-circle) 으로 라운드 조인/캡을 동시에 얻는다.
+//
+// IncrementalStrokeMesh: stamp_circle/connect_quad가 원래 순수 로컬 +
+// append 전용 연산이라는 점을 이용해, "포인트 1개 추가"를 독립적으로
+// 뽑아낸 버전. 그리는 중인 자유획(app::pointer)이 포인트를 push할
+// 때마다 여기에도 같이 push해서, 매 프레임 전체 재테셀레이션을 피하기
+// 위해 도입됨. tessellate_stroke(원샷, 커밋된 아이템/도형 프리뷰용)도
+// 내부적으로 이 위에서 재구현 — 로직 중복 방지.
 
 use crate::scene::Stroke;
 
@@ -17,38 +24,51 @@ pub struct StrokeMesh {
     pub indices: Vec<u32>,
 }
 
+/// 점진적으로 append 가능한 스트로크 메시. push_point를 호출한 순서대로
+/// "원 스탬프 + 직전 점과의 연결 사각형"이 쌓인다 — 이미 쌓인 부분은
+/// 다시 안 건드림(순수 append, O(1) amortized per point).
+pub struct IncrementalStrokeMesh {
+    pub origin: [f64; 2],
+    pub vertices: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+    last_point: Option<([f32; 2], f32)>, // (직전 점 로컬좌표, half_width)
+}
+
+impl IncrementalStrokeMesh {
+    pub fn new(origin: [f64; 2]) -> Self {
+        Self { origin, vertices: Vec::new(), indices: Vec::new(), last_point: None }
+    }
+
+    /// world 좌표 점 하나(+half_width)를 메시에 추가. origin 기준
+    /// 로컬로 변환 후 stamp_circle, 직전 점이 있으면 connect_quad로 이음.
+    pub fn push_point(&mut self, world_pos: [f64; 2], half_width: f32) {
+        let local = [
+            (world_pos[0] - self.origin[0]) as f32,
+            (world_pos[1] - self.origin[1]) as f32,
+        ];
+        stamp_circle(local, half_width, &mut self.vertices, &mut self.indices);
+        if let Some((prev_local, prev_hw)) = self.last_point {
+            connect_quad(prev_local, prev_hw, local, half_width, &mut self.vertices, &mut self.indices);
+        }
+        self.last_point = Some((local, half_width));
+    }
+}
+
+/// 원샷 전체 테셀레이션 — 커밋된 아이템(GpuResourceRegistry)이나 도형
+/// 프리뷰(as_stroke)처럼 "매번 처음부터 다시 만들어도 되는" 경우용.
+/// 내부적으로 IncrementalStrokeMesh를 그대로 재사용.
 pub fn tessellate_stroke(stroke: &Stroke) -> StrokeMesh {
-    let mut mesh = StrokeMesh { origin: [0.0, 0.0], vertices: Vec::new(), indices: Vec::new() };
-
     let Some(first) = stroke.points.first() else {
-        return mesh; // 빈 스트로크 — 방어적으로 빈 메시 반환
+        return StrokeMesh { origin: [0.0, 0.0], vertices: Vec::new(), indices: Vec::new() };
     };
-    mesh.origin = first.pos;
 
-    // origin 기준 로컬 좌표로 미리 변환 (f64 뺄셈 후 f32 캐스팅).
-    let local: Vec<[f32; 2]> = stroke
-        .points
-        .iter()
-        .map(|p| {
-            [
-                (p.pos[0] - mesh.origin[0]) as f32,
-                (p.pos[1] - mesh.origin[1]) as f32,
-            ]
-        })
-        .collect();
-
-    for (i, p) in stroke.points.iter().enumerate() {
-        let half_width = stroke.base_width * p.pressure.max(0.05) * 0.5; // 압력 0이어도 최소 두께는 보장
-        stamp_circle(local[i], half_width, &mut mesh.vertices, &mut mesh.indices);
+    let mut mesh = IncrementalStrokeMesh::new(first.pos);
+    for p in &stroke.points {
+        let half_width = stroke.base_width * p.pressure.max(0.05) * 0.5;
+        mesh.push_point(p.pos, half_width);
     }
 
-    for i in 0..local.len().saturating_sub(1) {
-        let hw0 = stroke.base_width * stroke.points[i].pressure.max(0.05) * 0.5;
-        let hw1 = stroke.base_width * stroke.points[i + 1].pressure.max(0.05) * 0.5;
-        connect_quad(local[i], hw0, local[i + 1], hw1, &mut mesh.vertices, &mut mesh.indices);
-    }
-
-    mesh
+    StrokeMesh { origin: mesh.origin, vertices: mesh.vertices, indices: mesh.indices }
 }
 
 fn stamp_circle(center: [f32; 2], radius: f32, vertices: &mut Vec<[f32; 2]>, indices: &mut Vec<u32>) {

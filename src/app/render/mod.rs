@@ -7,14 +7,19 @@
 // - cursor.rs     : 지우개 인디케이터/선택 핸들/커스텀 포인터 커서 —
 //                   매 프레임 즉석 생성, ui_cache와 완전히 독립
 // - primitives.rs : 화면좌표 즉석 draw 기본 도형(quad/line/circle) — cursor.rs가 씀
+// - live_stroke.rs: 그리는 중인 자유획 전용 growable GPU 버퍼 —
+//                   drawing_mesh_cache(CPU, pointer.rs가 점진 채움)를
+//                   신규분만 write_buffer로 밀어넣음
 //
-// mod.rs가 ui_cache/cursor를 오케스트레이션하고, ui_cache와 cursor는
+// mod.rs가 ui_cache/cursor/live_stroke를 오케스트레이션하고, 이들은
 // 서로의 존재를 모름(의도적 분리).
 
 mod cursor;
+mod live_stroke;
 mod primitives;
 mod ui_cache;
 
+pub(in crate::app) use live_stroke::LiveStrokeGpu;
 pub(in crate::app) use ui_cache::UiCache;
 
 use super::{App, Tool};
@@ -147,38 +152,31 @@ impl App {
             }
 
             // 그리는 중인 자유필기 스트로크(도형으로 스냅되기 전).
-            if let Some(stroke) = &self.drawing_stroke {
-                let mesh = tessellate_stroke(stroke);
-                if !mesh.indices.is_empty() {
-                    let vertex_data: Vec<Vertex> =
-                        mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
-
-                    let vertex_buf =
-                        self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("drawing_stroke_vertex_buf"),
-                            contents: bytemuck::cast_slice(&vertex_data),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
-                    let index_buf =
-                        self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("drawing_stroke_index_buf"),
-                            contents: bytemuck::cast_slice(&mesh.indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        });
+            // CPU 재계산 없음 — drawing_mesh_cache는 pointer.rs가 점을
+            // push할 때 이미 점진적으로 다 채워둔 상태. 여기선 그 중
+            // GPU에 아직 안 올라간 신규분만 live_stroke_gpu가 밀어넣음.
+            if let (Some(stroke), Some(mesh_cache)) = (&self.drawing_stroke, &self.drawing_mesh_cache) {
+                if !mesh_cache.indices.is_empty() {
+                    if self.live_stroke_gpu.is_none() {
+                        self.live_stroke_gpu = Some(LiveStrokeGpu::new(&self.core));
+                    }
+                    let live = self.live_stroke_gpu.as_mut().unwrap();
+                    live.sync(&self.core, mesh_cache);
 
                     let offset = [
-                        (mesh.origin[0] - self.camera.center[0]) as f32,
-                        (mesh.origin[1] - self.camera.center[1]) as f32,
+                        (mesh_cache.origin[0] - self.camera.center[0]) as f32,
+                        (mesh_cache.origin[1] - self.camera.center[1]) as f32,
                     ];
                     let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: stroke.color };
                     pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-                    pass.set_vertex_buffer(0, vertex_buf.slice(..));
-                    pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+                    pass.set_vertex_buffer(0, live.vertex_slice());
+                    pass.set_index_buffer(live.index_slice(), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh_cache.indices.len() as u32, 0, 0..1);
                 }
             }
 
-            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨).
+            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨). [이번 스코프 밖
+            // — 매 프레임 전체 재계산 유지, 이유는 위 축2/3 논의 참고]
             if let Some(shape) = &self.drawing_shape_preview {
                 let virtual_stroke = shape.as_stroke();
                 let mesh = tessellate_stroke(&virtual_stroke);
