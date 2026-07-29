@@ -57,7 +57,11 @@ impl StrokePipeline {
             label: Some("global_uniforms_bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                // capsule_stroke.wgsl의 fs_main이 zoom 기반 analytic AA를
+                // 위해 프래그먼트 단계에서도 globals를 읽어야 해서 확장.
+                // 기존 파이프라인(Stroke/Ui/Image)은 프래그먼트에서 이
+                // 바인딩을 안 쓰므로 넓혀도 영향 없음(순수 additive).
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,

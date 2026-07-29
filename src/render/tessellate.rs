@@ -1,35 +1,36 @@
 // ============================================================
 // src/render/tessellate.rs
 // ============================================================
-// Stroke(포인트+압력 리스트) -> 렌더용 삼각형 메시 변환.
-// "포인트마다 원을 찍고, 연속된 포인트 사이는 사각형으로 잇는다" 방식
-// (stamped-circle) 으로 라운드 조인/캡을 동시에 얻는다.
+// Stroke(포인트+압력 리스트) -> SDF 캡슐 기반 렌더 메시 변환. 포인트마다
+// 원을 스탬프하던 기존 방식 대신, 세그먼트(인접 두 점) 하나당 quad
+// 하나만 만든다 — 라운드 조인/캡은 capsule_stroke.wgsl의 거리함수가
+// 셰이더에서 알아서 처리(기하학적으로 미리 만들 필요 없음).
 //
-// IncrementalStrokeMesh: stamp_circle/connect_quad가 원래 순수 로컬 +
-// append 전용 연산이라는 점을 이용해, "포인트 1개 추가"를 독립적으로
-// 뽑아낸 버전. 그리는 중인 자유획(app::pointer)이 포인트를 push할
-// 때마다 여기에도 같이 push해서, 매 프레임 전체 재테셀레이션을 피하기
-// 위해 도입됨. tessellate_stroke(원샷, 커밋된 아이템/도형 프리뷰용)도
-// 내부적으로 이 위에서 재구현 — 로직 중복 방지.
+// IncrementalStrokeMesh: push_point 한 번 = 세그먼트 quad 하나 append
+// (첫 점은 예외 — "자기 자신과의 degenerate 세그먼트"로 점(dot) 하나를
+// 만들어서, 움직이기 전에도 펜 닿은 자리가 바로 보이게 함). append 전용
+// 연산이라 그리는 중인 자유획(app::pointer)이 점을 push할 때마다 여기
+// 그대로 재사용 가능.
 
+use crate::render::capsule_pipeline::StrokeVertex;
 use crate::scene::Stroke;
 
-const CIRCLE_SEGMENTS: usize = 8; // [미검증 가설] 시각적으로 충분히 둥근지 눈으로 확인 후 조정
+/// [미검증 가설] SDF 경계 바깥으로 quad를 얼마나 넉넉히 잡을지(world
+/// 단위). 너무 작으면 안티앨리어싱 전환대가 잘려서 계단져 보이고, 너무
+/// 크면 낭비되는 프래그먼트가 늘어남. 실사용 후 조정 대상.
+const AA_PADDING_WORLD: f32 = 1.5;
 
 pub struct StrokeMesh {
     /// 이 메시의 정점들이 상대적으로 표현된 기준점 (world 좌표, f64).
     pub origin: [f64; 2],
-    /// origin 기준 로컬 좌표 (f32) — 그리는 시점에 카메라 오프셋을 더해야 함.
-    pub vertices: Vec<[f32; 2]>,
+    pub vertices: Vec<StrokeVertex>,
     pub indices: Vec<u32>,
 }
 
-/// 점진적으로 append 가능한 스트로크 메시. push_point를 호출한 순서대로
-/// "원 스탬프 + 직전 점과의 연결 사각형"이 쌓인다 — 이미 쌓인 부분은
-/// 다시 안 건드림(순수 append, O(1) amortized per point).
+/// 점진적으로 append 가능한 캡슐 스트로크 메시.
 pub struct IncrementalStrokeMesh {
     pub origin: [f64; 2],
-    pub vertices: Vec<[f32; 2]>,
+    pub vertices: Vec<StrokeVertex>,
     pub indices: Vec<u32>,
     last_point: Option<([f32; 2], f32)>, // (직전 점 로컬좌표, half_width)
 }
@@ -39,16 +40,19 @@ impl IncrementalStrokeMesh {
         Self { origin, vertices: Vec::new(), indices: Vec::new(), last_point: None }
     }
 
-    /// world 좌표 점 하나(+half_width)를 메시에 추가. origin 기준
-    /// 로컬로 변환 후 stamp_circle, 직전 점이 있으면 connect_quad로 이음.
+    /// world 좌표 점 하나(+half_width)를 추가. 직전 점이 없으면(첫 점)
+    /// degenerate 세그먼트(A=B)로 점 하나를 찍고, 있으면 직전 점과 이
+    /// 점을 잇는 세그먼트 quad 하나를 추가.
     pub fn push_point(&mut self, world_pos: [f64; 2], half_width: f32) {
         let local = [
             (world_pos[0] - self.origin[0]) as f32,
             (world_pos[1] - self.origin[1]) as f32,
         ];
-        stamp_circle(local, half_width, &mut self.vertices, &mut self.indices);
-        if let Some((prev_local, prev_hw)) = self.last_point {
-            connect_quad(prev_local, prev_hw, local, half_width, &mut self.vertices, &mut self.indices);
+        match self.last_point {
+            None => push_segment_quad(local, half_width, local, half_width, &mut self.vertices, &mut self.indices),
+            Some((prev_local, prev_hw)) => {
+                push_segment_quad(prev_local, prev_hw, local, half_width, &mut self.vertices, &mut self.indices)
+            }
         }
         self.last_point = Some((local, half_width));
     }
@@ -56,7 +60,6 @@ impl IncrementalStrokeMesh {
 
 /// 원샷 전체 테셀레이션 — 커밋된 아이템(GpuResourceRegistry)이나 도형
 /// 프리뷰(as_stroke)처럼 "매번 처음부터 다시 만들어도 되는" 경우용.
-/// 내부적으로 IncrementalStrokeMesh를 그대로 재사용.
 pub fn tessellate_stroke(stroke: &Stroke) -> StrokeMesh {
     let Some(first) = stroke.points.first() else {
         return StrokeMesh { origin: [0.0, 0.0], vertices: Vec::new(), indices: Vec::new() };
@@ -71,43 +74,40 @@ pub fn tessellate_stroke(stroke: &Stroke) -> StrokeMesh {
     StrokeMesh { origin: mesh.origin, vertices: mesh.vertices, indices: mesh.indices }
 }
 
-fn stamp_circle(center: [f32; 2], radius: f32, vertices: &mut Vec<[f32; 2]>, indices: &mut Vec<u32>) {
-    let base = vertices.len() as u32;
-    vertices.push(center); // 부채꼴 중심점
-    for i in 0..=CIRCLE_SEGMENTS {
-        let theta = i as f32 / CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
-        vertices.push([center[0] + radius * theta.cos(), center[1] + radius * theta.sin()]);
-    }
-    for i in 0..CIRCLE_SEGMENTS as u32 {
-        indices.push(base);
-        indices.push(base + 1 + i);
-        indices.push(base + 2 + i);
-    }
-}
-
-/// 두 원(반지름 다를 수 있음) 사이를 사각형(삼각형 2개)으로 연결.
-/// 세그먼트 진행 방향에 수직인 법선 방향으로 각 반폭만큼 밀어서 4개
-/// 꼭짓점을 만든다.
-fn connect_quad(
-    p0: [f32; 2],
-    hw0: f32,
-    p1: [f32; 2],
-    hw1: f32,
-    vertices: &mut Vec<[f32; 2]>,
+/// 세그먼트(a-b, 반지름 ra/rb) 하나를 감싸는 quad 하나를 추가. a==b(같은
+/// 점)면 그 점 하나짜리 "점(dot)"을 표현하는 정사각형 quad가 됨 —
+/// capsule_sdf 공식이 이 경우도 그대로 처리(세그먼트 길이 0 → a에 대한
+/// 원판정으로 자동 귀결).
+fn push_segment_quad(
+    a: [f32; 2],
+    ra: f32,
+    b: [f32; 2],
+    rb: f32,
+    vertices: &mut Vec<StrokeVertex>,
     indices: &mut Vec<u32>,
 ) {
-    let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+    let dir = [b[0] - a[0], b[1] - a[1]];
     let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
-    if len < f32::EPSILON {
-        return; // 같은 위치에 찍힌 포인트 — 연결 사각형 불필요 (원끼리 겹쳐서 이미 채워짐)
-    }
-    let normal = [-dir[1] / len, dir[0] / len];
+    let max_r = ra.max(rb) + AA_PADDING_WORLD;
+
+    // 방향 벡터가 정의 안 되는 경우(점 하나)는 임의의 축으로.
+    let (unit_dir, normal) = if len > f32::EPSILON {
+        let u = [dir[0] / len, dir[1] / len];
+        (u, [-u[1], u[0]])
+    } else {
+        ([1.0, 0.0], [0.0, 1.0])
+    };
+
+    // 양 끝을 max_r만큼 더 늘려서(둥근 캡까지 포함) 넉넉한 bounding quad로.
+    let ext_a = [a[0] - unit_dir[0] * max_r, a[1] - unit_dir[1] * max_r];
+    let ext_b = [b[0] + unit_dir[0] * max_r, b[1] + unit_dir[1] * max_r];
 
     let base = vertices.len() as u32;
-    vertices.push([p0[0] + normal[0] * hw0, p0[1] + normal[1] * hw0]); // base+0
-    vertices.push([p0[0] - normal[0] * hw0, p0[1] - normal[1] * hw0]); // base+1
-    vertices.push([p1[0] + normal[0] * hw1, p1[1] + normal[1] * hw1]); // base+2
-    vertices.push([p1[0] - normal[0] * hw1, p1[1] - normal[1] * hw1]); // base+3
+    let make = |p: [f32; 2]| StrokeVertex { pos: p, seg_a: a, seg_b: b, radii: [ra, rb] };
+    vertices.push(make([ext_a[0] + normal[0] * max_r, ext_a[1] + normal[1] * max_r])); // base+0
+    vertices.push(make([ext_a[0] - normal[0] * max_r, ext_a[1] - normal[1] * max_r])); // base+1
+    vertices.push(make([ext_b[0] + normal[0] * max_r, ext_b[1] + normal[1] * max_r])); // base+2
+    vertices.push(make([ext_b[0] - normal[0] * max_r, ext_b[1] - normal[1] * max_r])); // base+3
 
     indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
 }

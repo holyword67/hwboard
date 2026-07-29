@@ -3,7 +3,6 @@
 // ============================================================
 use crate::gpu::core::GpuCore;
 use crate::render::image_pipeline::{ImagePipeline, ImageVertex};
-use crate::render::pipeline::Vertex;
 use crate::render::tessellate::tessellate_stroke;
 use crate::scene::{CanvasItem, ItemId, Scene};
 use std::collections::{HashMap, HashSet};
@@ -72,11 +71,10 @@ impl GpuResourceRegistry {
         for id in strokes_to_build {
             let Some(CanvasItem::Stroke(s)) = scene.item(id) else { continue };
             let mesh = tessellate_stroke(s);
-            let vertex_data: Vec<Vertex> = mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
 
             let vertex_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("stroke_vertex_buf"),
-                contents: bytemuck::cast_slice(&vertex_data),
+                contents: bytemuck::cast_slice(&mesh.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
             let index_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -101,11 +99,10 @@ impl GpuResourceRegistry {
             let Some(CanvasItem::Shape(sh)) = scene.item(id) else { continue };
             let virtual_stroke = sh.as_stroke();
             let mesh = tessellate_stroke(&virtual_stroke);
-            let vertex_data: Vec<Vertex> = mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
 
             let vertex_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shape_vertex_buf"),
-                contents: bytemuck::cast_slice(&vertex_data),
+                contents: bytemuck::cast_slice(&mesh.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
             let index_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

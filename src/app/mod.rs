@@ -10,6 +10,7 @@ mod shapes;
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState};
 use crate::render::camera::Camera;
+use crate::render::capsule_pipeline::CapsulePipeline;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::StrokePipeline;
@@ -41,6 +42,7 @@ pub struct App {
     pipeline: StrokePipeline,
     ui_pipeline: UiPipeline,
     image_pipeline: ImagePipeline,
+    capsule_pipeline: CapsulePipeline,
     registry: GpuResourceRegistry,
     scene: Scene,
     undo_stack: UndoStack,
@@ -91,6 +93,7 @@ impl App {
         let pipeline = StrokePipeline::new(&core);
         let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
         let image_pipeline = ImagePipeline::new(&core, &pipeline.global_bgl);
+        let capsule_pipeline = CapsulePipeline::new(&core, &pipeline.global_bgl);
         let (w, h) = window.size();
         let mouse = sdl_context.mouse();
         mouse.show_cursor(false); // 보드는 창 전체 — 시작 시점부터 OS 커서 숨김(커스텀 커서로 대체)
@@ -99,6 +102,7 @@ impl App {
             pipeline,
             ui_pipeline,
             image_pipeline,
+            capsule_pipeline,
             registry: GpuResourceRegistry::new(),
             scene: Scene::new(),
             undo_stack: UndoStack::new(),

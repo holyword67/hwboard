@@ -1,18 +1,17 @@
 // ============================================================
 // src/app/render/mod.rs
 // ============================================================
-// app/render.rs가 너무 길어져서 4개 파일로 분리:
+// app/render.rs가 너무 길어져서 5개 파일로 분리:
 // - mod.rs        : App::render_if_needed/render 오케스트레이터 (이 파일)
 // - ui_cache.rs   : 도구함(버튼/팔레트/두께바) 캐시 — ui_dirty일 때만 재조립
 // - cursor.rs     : 지우개 인디케이터/선택 핸들/커스텀 포인터 커서 —
 //                   매 프레임 즉석 생성, ui_cache와 완전히 독립
 // - primitives.rs : 화면좌표 즉석 draw 기본 도형(quad/line/circle) — cursor.rs가 씀
-// - live_stroke.rs: 그리는 중인 자유획 전용 growable GPU 버퍼 —
-//                   drawing_mesh_cache(CPU, pointer.rs가 점진 채움)를
-//                   신규분만 write_buffer로 밀어넣음
+// - live_stroke.rs: 그리는 중인 자유획 전용 growable GPU 버퍼
 //
-// mod.rs가 ui_cache/cursor/live_stroke를 오케스트레이션하고, 이들은
-// 서로의 존재를 모름(의도적 분리).
+// 스트로크/도형은 capsule_pipeline(SDF 캡슐 렌더링)을 쓰고, UI 오버레이는
+// 기존 ui_pipeline/stroke.wgsl을 그대로 씀 — 서로 완전히 분리된 별개
+// 파이프라인.
 
 mod cursor;
 mod live_stroke;
@@ -23,7 +22,7 @@ pub(in crate::app) use live_stroke::LiveStrokeGpu;
 pub(in crate::app) use ui_cache::UiCache;
 
 use super::{App, Tool};
-use crate::render::pipeline::{DrawImmediate, GlobalUniforms, Vertex};
+use crate::render::pipeline::{DrawImmediate, GlobalUniforms};
 use crate::render::tessellate::tessellate_stroke;
 use crate::scene::CanvasItem;
 use wgpu::util::DeviceExt;
@@ -84,7 +83,7 @@ impl App {
 
             self.registry.sync(&self.core, &self.image_pipeline, &mut self.scene);
 
-            pass.set_pipeline(&self.pipeline.pipeline);
+            pass.set_pipeline(&self.capsule_pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             let mut on_stroke_pipeline = true;
 
@@ -93,7 +92,7 @@ impl App {
                     CanvasItem::Stroke(s) => {
                         let Some(res) = self.registry.get_stroke(id) else { continue };
                         if !on_stroke_pipeline {
-                            pass.set_pipeline(&self.pipeline.pipeline);
+                            pass.set_pipeline(&self.capsule_pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
                             on_stroke_pipeline = true;
                         }
@@ -110,7 +109,7 @@ impl App {
                     CanvasItem::Shape(sh) => {
                         let Some(res) = self.registry.get_shape(id) else { continue };
                         if !on_stroke_pipeline {
-                            pass.set_pipeline(&self.pipeline.pipeline);
+                            pass.set_pipeline(&self.capsule_pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
                             on_stroke_pipeline = true;
                         }
@@ -147,14 +146,15 @@ impl App {
             }
 
             if !on_stroke_pipeline {
-                pass.set_pipeline(&self.pipeline.pipeline);
+                pass.set_pipeline(&self.capsule_pipeline.pipeline);
                 pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             }
 
             // 그리는 중인 자유필기 스트로크(도형으로 스냅되기 전).
             // CPU 재계산 없음 — drawing_mesh_cache는 pointer.rs가 점을
-            // push할 때 이미 점진적으로 다 채워둔 상태. 여기선 그 중
-            // GPU에 아직 안 올라간 신규분만 live_stroke_gpu가 밀어넣음.
+            // push할 때 이미 점진적으로 다 채워둔 상태. 파이프라인은 위
+            // 루프 이후 이미 capsule_pipeline으로 보장돼 있어서 별도로
+            // 다시 set_pipeline 안 해도 됨.
             if let (Some(stroke), Some(mesh_cache)) = (&self.drawing_stroke, &self.drawing_mesh_cache) {
                 if !mesh_cache.indices.is_empty() {
                     if self.live_stroke_gpu.is_none() {
@@ -175,18 +175,19 @@ impl App {
                 }
             }
 
-            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨). [이번 스코프 밖
-            // — 매 프레임 전체 재계산 유지, 이유는 위 축2/3 논의 참고]
+            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨). [이번 SDF
+            // 스코프에도 포함 — tessellate_stroke가 내부적으로 capsule
+            // 메시를 만들게 바뀌어서 여기도 자동으로 SDF 렌더링을 탐.
+            // 다만 매 프레임 전체 재계산은 유지(합의된 스코프: 재계산
+            // 자체를 점진화하는 건 이번 대상 아님).
             if let Some(shape) = &self.drawing_shape_preview {
                 let virtual_stroke = shape.as_stroke();
                 let mesh = tessellate_stroke(&virtual_stroke);
                 if !mesh.indices.is_empty() {
-                    let vertex_data: Vec<Vertex> =
-                        mesh.vertices.iter().map(|&pos| Vertex { pos }).collect();
                     let vertex_buf =
                         self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                             label: Some("drawing_shape_preview_vertex_buf"),
-                            contents: bytemuck::cast_slice(&vertex_data),
+                            contents: bytemuck::cast_slice(&mesh.vertices),
                             usage: wgpu::BufferUsages::VERTEX,
                         });
                     let index_buf =
@@ -216,8 +217,6 @@ impl App {
                 cache.draw(&mut pass);
             }
 
-            // 지우개 커서/선택 핸들/커스텀 포인터 커서 — ui_cache와 완전히
-            // 독립(매 프레임 위치 변화 → 즉석 생성, cursor.rs 참고).
             if self.tool == Tool::Eraser {
                 cursor::draw_eraser_indicator(
                     &self.core.device,
