@@ -43,6 +43,7 @@ Thumbs.db
 
 # 시뮬레이션 output 폴더
 /output/
+/vendor/
 
 # 기타 개인 설정
 CLAUDE.md
