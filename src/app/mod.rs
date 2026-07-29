@@ -10,7 +10,6 @@ mod shapes;
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState};
 use crate::render::camera::Camera;
-use crate::render::capsule_pipeline::CapsulePipeline;
 use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::StrokePipeline;
@@ -42,7 +41,6 @@ pub struct App {
     pipeline: StrokePipeline,
     ui_pipeline: UiPipeline,
     image_pipeline: ImagePipeline,
-    capsule_pipeline: CapsulePipeline,
     registry: GpuResourceRegistry,
     scene: Scene,
     undo_stack: UndoStack,
@@ -67,6 +65,9 @@ pub struct App {
     smoother_prev2: Option<[f64; 2]>,
     smoother_prev1: Option<PenPoint>,
     smoother_prev1_pending: bool,
+    /// 리본 지오메트리용 2단계 접선 지연 버퍼 — pointer.rs::feed_geometry_stage 참고.
+    geom_prev_pos: Option<[f64; 2]>,
+    geom_pending: Option<PenPoint>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
     eraser_pressed: bool,
     /// Tool::Select에서 현재 선택된 아이템.
@@ -97,7 +98,6 @@ impl App {
         let pipeline = StrokePipeline::new(&core);
         let ui_pipeline = UiPipeline::new(&core, &pipeline.global_bgl);
         let image_pipeline = ImagePipeline::new(&core, &pipeline.global_bgl);
-        let capsule_pipeline = CapsulePipeline::new(&core, &pipeline.global_bgl);
         let (w, h) = window.size();
         let mouse = sdl_context.mouse();
         mouse.show_cursor(false); // 보드는 창 전체 — 시작 시점부터 OS 커서 숨김(커스텀 커서로 대체)
@@ -106,7 +106,6 @@ impl App {
             pipeline,
             ui_pipeline,
             image_pipeline,
-            capsule_pipeline,
             registry: GpuResourceRegistry::new(),
             scene: Scene::new(),
             undo_stack: UndoStack::new(),
@@ -122,6 +121,8 @@ impl App {
             smoother_prev2: None,
             smoother_prev1: None,
             smoother_prev1_pending: false,
+            geom_prev_pos: None,
+            geom_pending: None,
             erasing_removed: Vec::new(),
             eraser_pressed: false,
             selected_item: None,

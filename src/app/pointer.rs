@@ -3,18 +3,13 @@
 // ============================================================
 use super::{App, Tool};
 use crate::input::{PointerEvent, PointerSource};
-use crate::render::tessellate::IncrementalStrokeMesh;
+use crate::render::tessellate::estimate_tangent;
 use crate::scene::{AddItem, CanvasItem, DeleteItems, PenPoint, ShapeKind, Stroke};
 use crate::ui::{self, UiAction};
 
 pub(super) const ERASER_RADIUS_SCREEN_PX: f32 = 12.0;
-/// [미검증 가설] 자유획 점 디시메이션 문턱값 — 직전에 실제로 채택된
-/// 점과 스크린상 이 거리 미만이면 점 자체를 안 늘림.
 const STROKE_POINT_MIN_DISTANCE_SCREEN_PX: f32 = 2.0;
 /// [미검증 가설] 경로 스무딩용 3점 가중 이동평균 가중치(좌/중/우).
-/// 관절의 라운드 조인이 미세한 폴리라인 꺾임 때문에 튀어나오는 문제를
-/// 완화하려고 도입 — 과하게 세게 걸면 의도된 뾰족한 코너(숫자/기호
-/// 필기)까지 뭉개지므로 가볍게만.
 const SMOOTHING_WEIGHTS: [f64; 3] = [0.25, 0.5, 0.25];
 
 impl App {
@@ -81,16 +76,17 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     base_width: self.pen_width,
                     mesh_dirty: true,
                 });
-                self.drawing_mesh_cache = Some(IncrementalStrokeMesh::new(world));
+                self.drawing_mesh_cache = Some(crate::render::tessellate::IncrementalStrokeMesh::new(world));
                 self.drawing_stroke_last_screen_pos = Some(s.pos);
                 if let Some(live) = &mut self.live_stroke_gpu {
                     live.reset();
                 }
 
-                // 새 획 시작 — 스무딩 버퍼 리셋. 첫 점(앵커)은 스무딩 없이
-                // 즉시 확정(펜 닿자마자 dot이 바로 보이도록).
+                // 새 획 시작 — 위치 스무딩 + 지오메트리 지연 버퍼 둘 다 리셋.
                 self.smoother_prev2 = None;
                 self.smoother_prev1_pending = false;
+                self.geom_prev_pos = None;
+                self.geom_pending = None;
                 let p0 = PenPoint { pos: world, pressure: s.pressure };
                 self.push_finalized_point(p0.clone());
                 self.smoother_prev1 = Some(p0);
@@ -131,9 +127,6 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     return;
                 }
 
-                // 디시메이션: 직전 채택 점과 스크린상 너무 가까우면 점
-                // 자체를 안 늘림. 스무딩은 이걸 통과한 점에 대해서만
-                // 적용됨(둘은 독립된 단계).
                 if let Some(last_pos) = self.drawing_stroke_last_screen_pos {
                     let dx = s.pos[0] - last_pos[0];
                     let dy = s.pos[1] - last_pos[1];
@@ -147,16 +140,22 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
             }
             (Tool::Pen, PointerEvent::Up(_)) => {
                 self.snap_state = None;
-                // 스무딩 대기 중이던 마지막 점(오른쪽 이웃이 없어 평활
-                // 확정 못 했던 꼬리) — 원본 그대로 흘려보냄.
                 if self.smoother_prev1_pending {
                     if let Some(tail) = self.smoother_prev1.take() {
                         self.push_finalized_point(tail);
                     }
                 }
+                // 지오메트리 지연 단계에 남아있던 마지막 점(오른쪽 이웃
+                // 없이 편측차분 접선으로) 최종 반영.
+                if let Some(last) = self.geom_pending.take() {
+                    let tangent = estimate_tangent(self.geom_prev_pos, last.pos, None);
+                    self.emit_geometry(&last, tangent);
+                }
                 self.smoother_prev2 = None;
                 self.smoother_prev1 = None;
                 self.smoother_prev1_pending = false;
+                self.geom_prev_pos = None;
+                self.geom_pending = None;
                 self.drawing_mesh_cache = None;
                 self.drawing_stroke_last_screen_pos = None;
                 if let Some(shape) = self.drawing_shape_preview.take() {
@@ -181,6 +180,8 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                         self.smoother_prev2 = None;
                         self.smoother_prev1 = None;
                         self.smoother_prev1_pending = false;
+                        self.geom_prev_pos = None;
+                        self.geom_pending = None;
                         self.snap_state = Some(snap_data);
                     }
                 }
@@ -206,10 +207,8 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// 새 raw 점을 스무딩 슬라이딩 윈도우에 흘려넣음. 윈도우(직전-직전,
-    /// 직전, 지금)가 다 찼을 때만 "직전" 점의 평활 위치를 확정해서
-    /// push — 1점 지연 append. 윈도우 안 찬 상태(획 시작 직후)는
-    /// 슬라이드만 하고 아직 아무것도 push 안 함.
+    /// 위치 스무딩 슬라이딩 윈도우(1점 지연) — 직전-직전/직전/지금이
+    /// 다 찼을 때만 "직전" 점의 평활 위치를 확정해서 push.
     fn feed_smoother(&mut self, raw: PenPoint) {
         match (self.smoother_prev2, self.smoother_prev1.clone()) {
             (Some(a), Some(b)) => {
@@ -223,33 +222,46 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 self.smoother_prev1_pending = true;
             }
             (None, Some(b)) => {
-                // 윈도우 부족(획의 두 번째 점) — b는 이미 앵커로 push된
-                // 상태라 다시 확정할 필요 없음, 슬라이드만.
                 self.smoother_prev2 = Some(b.pos);
                 self.smoother_prev1 = Some(raw);
                 self.smoother_prev1_pending = true;
             }
             (_, None) => {
-                // Down이 항상 prev1을 세팅하므로 이론상 도달 안 함.
                 self.smoother_prev1 = Some(raw);
                 self.smoother_prev1_pending = true;
             }
         }
     }
 
-    /// 확정된 점(스무딩 완료 또는 앵커) 하나를 stroke.points와
-    /// mesh_cache 양쪽에 동시 반영.
+    /// 위치 스무딩이 끝난 점을 stroke.points에 즉시 반영(히트테스트/
+    /// 도형인식은 이 시점에 바로 확정) + 지오메트리 지연 단계에 공급.
     fn push_finalized_point(&mut self, point: PenPoint) {
-        let half_width = match &mut self.drawing_stroke {
-            Some(stroke) => {
-                let hw = stroke.base_width * point.pressure.max(0.05) * 0.5;
-                stroke.points.push(point.clone());
-                hw
-            }
+        match &mut self.drawing_stroke {
+            Some(stroke) => stroke.points.push(point.clone()),
+            None => return,
+        }
+        self.feed_geometry_stage(point);
+    }
+
+    /// 접선 계산용 2단계 지연 — 점이 하나 더 들어와야 직전 점의 접선을
+    /// 중심차분으로 확정할 수 있어서, 실제 리본 지오메트리는
+    /// stroke.points보다 한 점 늦게 반영됨.
+    fn feed_geometry_stage(&mut self, point: PenPoint) {
+        if let Some(pending) = self.geom_pending.take() {
+            let tangent = estimate_tangent(self.geom_prev_pos, pending.pos, Some(point.pos));
+            self.emit_geometry(&pending, tangent);
+            self.geom_prev_pos = Some(pending.pos);
+        }
+        self.geom_pending = Some(point);
+    }
+
+    fn emit_geometry(&mut self, point: &PenPoint, tangent: [f32; 2]) {
+        let half_width = match &self.drawing_stroke {
+            Some(stroke) => stroke.base_width * point.pressure.max(0.05) * 0.5,
             None => return,
         };
         if let Some(mesh_cache) = &mut self.drawing_mesh_cache {
-            mesh_cache.push_point(point.pos, half_width);
+            mesh_cache.push_point(point.pos, half_width, tangent);
         }
     }
 

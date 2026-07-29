@@ -9,7 +9,7 @@
 // 있으면 재할당 없이 그대로 씀).
 
 use crate::gpu::core::GpuCore;
-use crate::render::capsule_pipeline::StrokeVertex;
+use crate::render::pipeline::Vertex;
 use crate::render::tessellate::IncrementalStrokeMesh;
 
 /// [미검증 가설] 초기 캐패시티(원소 개수) — 짧은 획은 재할당 없이 바로
@@ -30,7 +30,7 @@ impl LiveStrokeGpu {
     pub(in crate::app) fn new(core: &GpuCore) -> Self {
         let vertex_buf = core.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("live_stroke_vertex_buf"),
-            size: INITIAL_VERTEX_CAPACITY * std::mem::size_of::<StrokeVertex>() as u64,
+            size: INITIAL_VERTEX_CAPACITY * std::mem::size_of::<Vertex>() as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -72,7 +72,7 @@ impl LiveStrokeGpu {
 
             self.vertex_buf = core.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("live_stroke_vertex_buf"),
-                size: self.vertex_capacity * std::mem::size_of::<StrokeVertex>() as u64,
+                size: self.vertex_capacity * std::mem::size_of::<Vertex>() as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -92,7 +92,7 @@ impl LiveStrokeGpu {
         }
 
         if mesh.vertices.len() > self.synced_vertices {
-            let offset = (self.synced_vertices * std::mem::size_of::<StrokeVertex>()) as u64;
+            let offset = (self.synced_vertices * std::mem::size_of::<Vertex>()) as u64;
             core.queue.write_buffer(&self.vertex_buf, offset, bytemuck::cast_slice(&mesh.vertices[self.synced_vertices..]));
             self.synced_vertices = mesh.vertices.len();
         }

@@ -9,9 +9,9 @@
 // - primitives.rs : 화면좌표 즉석 draw 기본 도형(quad/line/circle) — cursor.rs가 씀
 // - live_stroke.rs: 그리는 중인 자유획 전용 growable GPU 버퍼
 //
-// 스트로크/도형은 capsule_pipeline(SDF 캡슐 렌더링)을 쓰고, UI 오버레이는
-// 기존 ui_pipeline/stroke.wgsl을 그대로 씀 — 서로 완전히 분리된 별개
-// 파이프라인.
+// 스트로크/도형/UI 오버레이 모두 동일한 StrokePipeline(self.pipeline)을
+// 씀 — 리본형 테셀레이션이 겹치는 프리미티브를 안 만들기 때문에 SDF
+// 전용 파이프라인 없이도 문제 없음(과거 capsule_pipeline은 폐기됨).
 
 mod cursor;
 mod live_stroke;
@@ -27,8 +27,6 @@ use crate::render::tessellate::tessellate_stroke;
 use crate::scene::CanvasItem;
 use wgpu::util::DeviceExt;
 
-/// 커스텀 포인터 커서(도구 아이콘) 크기 — ui::BUTTON_SIZE(20.0)와
-/// 비슷한 체감 크기로 맞춤. [미검증 가설] 실제 조작감은 확인 필요.
 const CURSOR_ICON_SIZE_SCREEN_PX: f32 = 22.0;
 
 impl App {
@@ -83,7 +81,7 @@ impl App {
 
             self.registry.sync(&self.core, &self.image_pipeline, &mut self.scene);
 
-            pass.set_pipeline(&self.capsule_pipeline.pipeline);
+            pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             let mut on_stroke_pipeline = true;
 
@@ -92,7 +90,7 @@ impl App {
                     CanvasItem::Stroke(s) => {
                         let Some(res) = self.registry.get_stroke(id) else { continue };
                         if !on_stroke_pipeline {
-                            pass.set_pipeline(&self.capsule_pipeline.pipeline);
+                            pass.set_pipeline(&self.pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
                             on_stroke_pipeline = true;
                         }
@@ -109,7 +107,7 @@ impl App {
                     CanvasItem::Shape(sh) => {
                         let Some(res) = self.registry.get_shape(id) else { continue };
                         if !on_stroke_pipeline {
-                            pass.set_pipeline(&self.capsule_pipeline.pipeline);
+                            pass.set_pipeline(&self.pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
                             on_stroke_pipeline = true;
                         }
@@ -146,15 +144,10 @@ impl App {
             }
 
             if !on_stroke_pipeline {
-                pass.set_pipeline(&self.capsule_pipeline.pipeline);
+                pass.set_pipeline(&self.pipeline.pipeline);
                 pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             }
 
-            // 그리는 중인 자유필기 스트로크(도형으로 스냅되기 전).
-            // CPU 재계산 없음 — drawing_mesh_cache는 pointer.rs가 점을
-            // push할 때 이미 점진적으로 다 채워둔 상태. 파이프라인은 위
-            // 루프 이후 이미 capsule_pipeline으로 보장돼 있어서 별도로
-            // 다시 set_pipeline 안 해도 됨.
             if let (Some(stroke), Some(mesh_cache)) = (&self.drawing_stroke, &self.drawing_mesh_cache) {
                 if !mesh_cache.indices.is_empty() {
                     if self.live_stroke_gpu.is_none() {
@@ -175,11 +168,6 @@ impl App {
                 }
             }
 
-            // 스냅된 도형 프리뷰(Hold 이후, 아직 Up 안 됨). [이번 SDF
-            // 스코프에도 포함 — tessellate_stroke가 내부적으로 capsule
-            // 메시를 만들게 바뀌어서 여기도 자동으로 SDF 렌더링을 탐.
-            // 다만 매 프레임 전체 재계산은 유지(합의된 스코프: 재계산
-            // 자체를 점진화하는 건 이번 대상 아님).
             if let Some(shape) = &self.drawing_shape_preview {
                 let virtual_stroke = shape.as_stroke();
                 let mesh = tessellate_stroke(&virtual_stroke);
@@ -208,8 +196,6 @@ impl App {
                 }
             }
 
-            // UI 오버레이 — 캔버스 다음에 그려서 항상 위에 보이게.
-            // 도구함(버튼/팔레트/두께바)은 ui_cache에서 그대로 재생.
             pass.set_pipeline(&self.ui_pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
 
