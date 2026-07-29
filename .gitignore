@@ -34,10 +34,6 @@ Thumbs.db
 # 로그 파일
 *.log
 
-# 시뮬레이션 결과 파일 (자동 생성되므로 제외)
-microbe_simulation_*.json
-microbe_simulation_*.png
-
 # 임시 파일 및 백업
 *.tmp
 *.temp
