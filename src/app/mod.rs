@@ -147,6 +147,12 @@ impl App {
     }
 
     pub fn set_tool(&mut self, tool: Tool) {
+        // Select를 벗어나면 선택 상태도 같이 리셋 — 다른 도구로 바꾼 뒤
+        // Del 눌러서 옛날에 선택해뒀던 아이템이 지워지는 걸 방지.
+        if tool != Tool::Select {
+            self.selected_item = None;
+            self.select_drag = None;
+        }
         self.tool = tool;
     }
 
@@ -213,9 +219,9 @@ impl App {
             Keycode::V if ctrl => self.paste_image_from_clipboard(),
 
             // 도구 선택: A=펜, S=지우개, D=선택기
-            Keycode::A => { self.tool = Tool::Pen; self.ui_dirty = true; }
-            Keycode::S => { self.tool = Tool::Eraser; self.ui_dirty = true; }
-            Keycode::D => { self.tool = Tool::Select; self.ui_dirty = true; }
+            Keycode::A => { self.set_tool(Tool::Pen); self.ui_dirty = true; }
+            Keycode::S => { self.set_tool(Tool::Eraser); self.ui_dirty = true; }
+            Keycode::D => { self.set_tool(Tool::Select); self.ui_dirty = true; }
 
             // 컬러 팔레트: Q,W,E,R = ui::PALETTE[0..4] 순서 그대로
             Keycode::Q => { self.pen_color = ui::PALETTE[0]; self.ui_dirty = true; }

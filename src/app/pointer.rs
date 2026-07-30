@@ -18,7 +18,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
             if let Some(action) = ui::hit_test(s.pos, self.camera.viewport_size, self.tool, self.pen_color, self.pen_width) {
                 self.pointer_captured_by_ui = true;
                 match action {
-                    UiAction::SelectTool(t) => self.tool = t,
+                    UiAction::SelectTool(t) => self.set_tool(t),
                     UiAction::SelectColor(c) => self.pen_color = c,
                     UiAction::SelectThickness(w) => self.pen_width = w,
                 }
