@@ -205,6 +205,7 @@ impl App {
         match kc {
             Keycode::Backspace => self.undo_stack.undo(&mut self.scene),
             Keycode::Equals => self.undo_stack.redo(&mut self.scene),
+            Keycode::Delete => self.delete_selected_item(),
             Keycode::Return => {
                 self.is_fullscreen = !self.is_fullscreen;
                 let _ = window.set_fullscreen(self.is_fullscreen);

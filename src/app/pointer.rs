@@ -283,9 +283,12 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
             if self.erasing_removed.iter().any(|(rid, _, _)| *rid == id) {
                 return None;
             }
+            // 이미지는 지우개 대상에서 제외 — Del 키로만 삭제 가능하도록.
+            if matches!(item, CanvasItem::Image(_)) {
+                return None;
+            }
             item.hit_test(world, r).then_some(id)
         });
-
         if let Some(id) = hit {
             if let Some(item) = self.scene.item(id).cloned() {
                 let z = self.scene.z_index_of(id).unwrap_or(0);

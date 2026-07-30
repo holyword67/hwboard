@@ -8,7 +8,7 @@
 
 use super::App;
 use crate::input::PointerEvent;
-use crate::scene::{CanvasItem, ItemId, MoveItems, ResizeImage, Shape, TransformShape};
+use crate::scene::{CanvasItem, DeleteItems, ItemId, MoveItems, ResizeImage, Shape, TransformShape};
 
 /// 클릭 판정 허용 오차(스크린 px, zoom으로 world 환산). 지우개보다
 /// 살짝 타이트하게 잡음 — 얇은 직선을 정확히 집어야 하니까.
@@ -39,6 +39,17 @@ impl App {
             PointerEvent::Up(_) => self.select_pointer_up(),
             PointerEvent::Hold(_) => {}
         }
+    }
+
+    /// 선택된 아이템 삭제(Del 키 전용 경로). 지우개 히트테스트를 안 거치므로
+    /// 타입 상관없이 지워짐 — 지우개로 막아둔 이미지도 이 경로로는 삭제 가능.
+    pub(super) fn delete_selected_item(&mut self) {
+        let Some(id) = self.selected_item.take() else { return };
+        let Some(item) = self.scene.item(id).cloned() else { return };
+        let z = self.scene.z_index_of(id).unwrap_or(0);
+        self.scene.remove(id);
+        let cmd = Box::new(DeleteItems { removed: vec![(id, item, z)] });
+        self.undo_stack.push_already_applied(cmd);
     }
 
     fn select_pointer_down(&mut self, screen_pos: [f32; 2]) {
