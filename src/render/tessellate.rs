@@ -8,6 +8,13 @@
 // 관절마다 완전한 원을 겹쳐 그리면서 만들던 라운드 조인 돌기/이중
 // 블렌딩 문제가 구조적으로 발생 불가능해짐. SDF 셰이더도 불필요 —
 // 겹침이 없으니 평범한 삼각형 채우기 + 기존 4x MSAA로 충분.
+//
+// 단, 열린 경로(진짜 손글씨 스트로크, Line 도형)의 양 끝 2곳만은
+// 예외 — 반원 팬(라운드 캡)을 추가해서 뭉툭한 끝 마감을 둥글게 처리.
+// 관절마다 겹치던 예전 방식과 달리 스트로크당 딱 2개뿐이라 오버랩/
+// 블렌딩 문제가 재발하지 않음. Shape outline(사각형/원/삼각형)처럼
+// 첫점=끝점인 "닫힌" 경로에는 캡을 붙이면 안 됨(엉뚱한 곳에 혹이
+// 생김) — tessellate_stroke가 첫점/끝점 비교로 자동 구분.
 
 use crate::render::pipeline::Vertex;
 use crate::scene::Stroke;
@@ -55,6 +62,40 @@ impl IncrementalStrokeMesh {
         }
         self.has_prev_pair = true;
     }
+
+    /// 열린 경로의 시작/끝에 반원 팬(라운드 캡) 추가. forward=false면
+    /// -tangent 방향(시작점보다 더 뒤)으로, forward=true면 +tangent
+    /// 방향(끝점보다 더 앞)으로 부풀어오름. 호(arc) 양 끝 정점은
+    /// push_point의 left/right와 동일한 공식(normal 기준)으로 계산되기
+    /// 때문에 리본과 좌표가 정확히 일치 — 이음매 크랙 없음.
+    /// 닫힌 경로(Shape outline)에는 호출 금지: 호출부에서 판별해서 막음.
+    pub fn push_round_cap(&mut self, world_pos: [f64; 2], tangent: [f32; 2], radius: f32, forward: bool) {
+        const SEGMENTS: usize = 12;
+        let local = [
+            (world_pos[0] - self.origin[0]) as f32,
+            (world_pos[1] - self.origin[1]) as f32,
+        ];
+        let normal = [-tangent[1], tangent[0]];
+        let sign = if forward { 1.0 } else { -1.0 };
+
+        let center_idx = self.vertices.len() as u32;
+        self.vertices.push(Vertex { pos: local });
+
+        let arc_start = self.vertices.len() as u32;
+        for i in 0..=SEGMENTS {
+            let t = std::f32::consts::PI * (i as f32) / (SEGMENTS as f32);
+            let (sin_t, cos_t) = t.sin_cos();
+            let dir = [
+                cos_t * normal[0] + sign * sin_t * tangent[0],
+                cos_t * normal[1] + sign * sin_t * tangent[1],
+            ];
+            self.vertices.push(Vertex { pos: [local[0] + dir[0] * radius, local[1] + dir[1] * radius] });
+        }
+
+        for i in 0..SEGMENTS {
+            self.indices.extend_from_slice(&[center_idx, arc_start + i as u32, arc_start + i as u32 + 1]);
+        }
+    }
 }
 
 /// 점 i의 접선을 중심차분으로 추정. prev/next가 없으면(경로 끝) 한쪽만
@@ -78,13 +119,23 @@ pub fn tessellate_stroke(stroke: &Stroke) -> StrokeMesh {
     }
 
     let mut mesh = IncrementalStrokeMesh::new(stroke.points[0].pos);
+    // 첫점==끝점이면 Shape outline처럼 이미 닫힌 루프 — 캡 생략 대상.
+    let is_open = n >= 2 && stroke.points[0].pos != stroke.points[n - 1].pos;
+
     for i in 0..n {
         let p = &stroke.points[i];
         let half_width = stroke.base_width * p.pressure.max(0.05) * 0.5;
         let prev = if i > 0 { Some(stroke.points[i - 1].pos) } else { None };
         let next = if i + 1 < n { Some(stroke.points[i + 1].pos) } else { None };
         let tangent = estimate_tangent(prev, p.pos, next);
+
+        if is_open && i == 0 {
+            mesh.push_round_cap(p.pos, tangent, half_width, false);
+        }
         mesh.push_point(p.pos, half_width, tangent);
+        if is_open && i == n - 1 {
+            mesh.push_round_cap(p.pos, tangent, half_width, true);
+        }
     }
 
     StrokeMesh { origin: mesh.origin, vertices: mesh.vertices, indices: mesh.indices }

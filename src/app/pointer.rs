@@ -162,7 +162,17 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     let id = self.scene.alloc_id();
                     let cmd = Box::new(AddItem { id, item: CanvasItem::Shape(shape) });
                     self.undo_stack.execute(cmd, &mut self.scene);
-                } else if let Some(stroke) = self.drawing_stroke.take() {
+                } else if let Some(mut stroke) = self.drawing_stroke.take() {
+                    // 톡 찍기(드래그 없는 탭) 대응: 점이 1개뿐이면 아주 살짝 옆으로
+                    // 민 점을 하나 추가해서 2점짜리 초단거리 스트로크로 만듦. 시각적
+                    // 결과는 tessellate_stroke의 라운드 캡 두 개가 거의 겹쳐서 동그란
+                    // 점으로 보임(반지름 비례 오프셋이라 줌 레벨과 무관하게 일관됨).
+                    if stroke.points.len() == 1 {
+                        let p0 = stroke.points[0].clone();
+                        let radius = (stroke.base_width * p0.pressure.max(0.05) * 0.5) as f64;
+                        let eps = radius * 0.02;
+                        stroke.points.push(PenPoint { pos: [p0.pos[0] + eps, p0.pos[1]], pressure: p0.pressure });
+                    }
                     if stroke.points.len() >= 2 {
                         let id = self.scene.alloc_id();
                         let cmd = Box::new(AddItem { id, item: CanvasItem::Stroke(stroke) });
