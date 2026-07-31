@@ -234,6 +234,6 @@ impl App {
         }
 
         self.core.queue.submit(std::iter::once(encoder.finish()));
-        frame.present();
+        self.core.queue.present(frame);
     }
 }

@@ -93,7 +93,7 @@ impl StrokePipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
@@ -101,7 +101,7 @@ impl StrokePipeline {
                         shader_location: 0,
                         format: wgpu::VertexFormat::Float32x2,
                     }],
-                }],
+                })],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,

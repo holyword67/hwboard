@@ -38,6 +38,7 @@ impl GpuCore {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .unwrap();
@@ -58,20 +59,28 @@ impl GpuCore {
             .unwrap();
 
         let (width, height) = window.size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_capabilities(&adapter).formats[0],
-            width,
-            height,
-            // [결정 필요할 수도] doxa2는 Immediate(vsync 없음, 지연 최소화
-            // 우선)였는데, 화이트보드는 애니메이션이 거의 없고 정적인
-            // 화면이 대부분이라 Fifo(vsync)로 바꿨어 — 티어링 방지 +
-            // 불필요한 GPU 사용 감소. 이견 있으면 알려줘.
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: surface.get_capabilities(&adapter).alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
+let caps = surface.get_capabilities(&adapter);
+
+// [실측 확인됨, 2026.7.31] 이 환경은 Rgba16Float+ExtendedSrgbLinear를
+// 지원하고, Windows가 HDR active로 보고함(sdr_white 240nit,
+// max_full_frame 343.75nit → 헤드룸 약 1.43x). Auto/8비트 포맷으로는
+// SDR 압축 경로를 못 벗어나던 게 그레이보드의 원인이었음 — scRGB
+// linear로 명시 전환해서 SDR 압축 경로 자체를 우회함.
+// 셰이더 쪽 수정은 불필요: ExtendedSrgbLinear는 "1.0 = SDR 흰색"
+// 기준의 선형 인코딩이라, 기존에 *Srgb 포맷에 쓰던 0.0~1.0 색상값을
+// 그대로 둬도 동일한 밝기로 재현됨(하드웨어 sRGB 인코드가 스킵될
+// 뿐, 값의 의미 자체는 유지).
+let config = wgpu::SurfaceConfiguration {
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    format: wgpu::TextureFormat::Rgba16Float,
+    color_space: wgpu::SurfaceColorSpace::ExtendedSrgbLinear,
+    width,
+    height,
+    present_mode: wgpu::PresentMode::Fifo,
+    alpha_mode: caps.alpha_modes[0],
+    view_formats: vec![],
+    desired_maximum_frame_latency: 2,
+};
         surface.configure(&device, &config);
 
         let global_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
