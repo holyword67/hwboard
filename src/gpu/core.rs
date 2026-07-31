@@ -100,21 +100,25 @@ impl GpuCore {
 /// 가능 밝기)를 씀 — 배경/펜이 화면 전체를 채우는 "풀프레임" 케이스라
 /// wgpu 기본 제공 tone_map_headroom()(내부적으로 max_nits 사용)은
 /// 우리 케이스엔 안 맞아서 직접 계산.
-fn compute_color_boost(info: &wgpu::DisplayHdrInfo) -> f32 {
-    const SAFETY_MARGIN: f32 = 0.9; // [미검증 가설] 실사용 후 조정 대상
+/// [수정]
+/// 변경 후 (실측 확인된 진짜 기준 — scRGB 1.0은 항상 80nit 고정, MS 공식 문서로 확인)
+/// [실측 확인됨, 2026.7.31 — Microsoft Direct3D HDR 문서 기준]
+/// scRGB(ExtendedSrgbLinear)에서 1.0은 sdr_white_nits가 아니라
+/// **항상 고정된 80니트**로 정의됨. sdr_white_nits는 DWM이 예전
+/// 8비트 SDR 표면에만 걸어주는 별도 자동보정(SDRBoost) 대상이라,
+/// scRGB로 전환한 순간부터 우리는 그 보정 대상에서 빠짐 — 우리가
+/// 직접 80nit 기준으로 원하는 밝기를 계산해서 넣어줘야 함.
+const SCRGB_REFERENCE_NITS: f32 = 80.0;
 
+// 변경 후
+// [실측 확인됨, 2026.7.31] SAFETY_MARGIN=0.0(=헤드룸 안 씀, 기존
+// SDR 흰색만 재현)이 이미 만족스러움을 확인 — peak/헤드룸 관련
+// 계산은 불필요해져서 제거. 공식이 target=sdr_white_nits로
+// 단순화됨(= boost = sdr_white_nits / 80).
+fn compute_color_boost(info: &wgpu::DisplayHdrInfo) -> f32 {
     if info.coarse.and_then(|c| c.high_dynamic_range) == Some(false) {
-        return 1.0; // 확정 SDR 디스플레이 — 손대지 않음
-    }
-    let Some(lum) = info.luminance else { return 1.0 };
-    let (Some(peak), Some(white)) = (lum.max_full_frame_nits.or(lum.max_nits), lum.sdr_white_nits) else {
-        return 1.0;
-    };
-    if white <= 0.0 {
         return 1.0;
     }
-    let ratio = (peak / white).max(1.0);
-    // 마진을 "1.0 넘는 부분"에만 적용 — 계산 결과가 절대 1.0 밑으로
-    // 안 내려가게(=절대 어둡게는 안 만듦) 보장.
-    1.0 + (ratio - 1.0) * SAFETY_MARGIN
+    let Some(white) = info.luminance.and_then(|l| l.sdr_white_nits) else { return 1.0 };
+    (white / SCRGB_REFERENCE_NITS).max(1.0)
 }
