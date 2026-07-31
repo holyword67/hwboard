@@ -1,18 +1,6 @@
 // ============================================================
 // src/app/render/mod.rs
 // ============================================================
-// app/render.rs가 너무 길어져서 5개 파일로 분리:
-// - mod.rs        : App::render_if_needed/render 오케스트레이터 (이 파일)
-// - ui_cache.rs   : 도구함(버튼/팔레트/두께바) 캐시 — ui_dirty일 때만 재조립
-// - cursor.rs     : 지우개 인디케이터/선택 핸들/커스텀 포인터 커서 —
-//                   매 프레임 즉석 생성, ui_cache와 완전히 독립
-// - primitives.rs : 화면좌표 즉석 draw 기본 도형(quad/line/circle) — cursor.rs가 씀
-// - live_stroke.rs: 그리는 중인 자유획 전용 growable GPU 버퍼
-//
-// 스트로크/도형/UI 오버레이 모두 동일한 StrokePipeline(self.pipeline)을
-// 씀 — 리본형 테셀레이션이 겹치는 프리미티브를 안 만들기 때문에 SDF
-// 전용 파이프라인 없이도 문제 없음(과거 capsule_pipeline은 폐기됨).
-
 mod cursor;
 mod live_stroke;
 mod primitives;
@@ -30,6 +18,15 @@ use wgpu::util::DeviceExt;
 const CURSOR_ICON_SIZE_SCREEN_PX: f32 = 22.0;
 
 impl App {
+    /// HDR 색상 부스트 적용(rgb만, alpha 무변화). Scene에 저장된 색값은
+    /// 항상 SDR 기준(0.0~1.0)으로 유지하고, 실제로 GPU에 넘기는 이
+    /// 시점에만 곱해줌 — Undo/Redo나 나중에 헤드룸 재조회 기능이
+    /// 생겨도 저장 데이터가 오염 안 되도록.
+    pub(super) fn boosted(&self, c: [f32; 4]) -> [f32; 4] {
+        let b = self.core.color_boost;
+        [c[0] * b, c[1] * b, c[2] * b, c[3]]
+    }
+
     pub fn render_if_needed(&mut self) {
         if self.dirty && self.has_focus {
             self.render();
@@ -61,6 +58,8 @@ impl App {
         let mut encoder =
             self.core.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        let bg = self.boosted([1.0, 1.0, 1.0, 1.0]);
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -69,7 +68,9 @@ impl App {
                     resolve_target: Some(&view),
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: bg[0] as f64, g: bg[1] as f64, b: bg[2] as f64, a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -98,7 +99,7 @@ impl App {
                             (res.origin[0] - self.camera.center[0]) as f32,
                             (res.origin[1] - self.camera.center[1]) as f32,
                         ];
-                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: s.color };
+                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted(s.color) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
                         pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
@@ -115,7 +116,7 @@ impl App {
                             (res.origin[0] - self.camera.center[0]) as f32,
                             (res.origin[1] - self.camera.center[1]) as f32,
                         ];
-                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: sh.color };
+                        let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted(sh.color) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
                         pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
@@ -133,6 +134,7 @@ impl App {
                             (res.origin[0] - self.camera.center[0]) as f32,
                             (res.origin[1] - self.camera.center[1]) as f32,
                         ];
+                        // 이미지는 부스트 대상 아님(원본 사진 색 왜곡 방지 — 이번 스코프 밖)
                         let immediate =
                             DrawImmediate { offset, _pad: [0.0; 2], color: [1.0, 1.0, 1.0, 1.0] };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
@@ -153,6 +155,7 @@ impl App {
                     if self.live_stroke_gpu.is_none() {
                         self.live_stroke_gpu = Some(LiveStrokeGpu::new(&self.core));
                     }
+                    let color = self.boosted(stroke.color);
                     let live = self.live_stroke_gpu.as_mut().unwrap();
                     live.sync(&self.core, mesh_cache);
 
@@ -160,7 +163,7 @@ impl App {
                         (mesh_cache.origin[0] - self.camera.center[0]) as f32,
                         (mesh_cache.origin[1] - self.camera.center[1]) as f32,
                     ];
-                    let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: stroke.color };
+                    let immediate = DrawImmediate { offset, _pad: [0.0; 2], color };
                     pass.set_immediates(0, bytemuck::bytes_of(&immediate));
                     pass.set_vertex_buffer(0, live.vertex_slice());
                     pass.set_index_buffer(live.index_slice(), wgpu::IndexFormat::Uint32);
@@ -188,7 +191,7 @@ impl App {
                         (mesh.origin[0] - self.camera.center[0]) as f32,
                         (mesh.origin[1] - self.camera.center[1]) as f32,
                     ];
-                    let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: shape.color };
+                    let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted(shape.color) };
                     pass.set_immediates(0, bytemuck::bytes_of(&immediate));
                     pass.set_vertex_buffer(0, vertex_buf.slice(..));
                     pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
@@ -223,11 +226,11 @@ impl App {
             match self.tool {
                 Tool::Pen => cursor::draw_tool_icon_at(
                     &self.core.device, &mut pass, Tool::Pen,
-                    self.input.last_pen_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.pen_color,
+                    self.input.last_pen_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.boosted(self.pen_color),
                 ),
                 Tool::Select => cursor::draw_tool_icon_at(
                     &self.core.device, &mut pass, Tool::Select,
-                    self.input.last_mouse_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.pen_color,
+                    self.input.last_mouse_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.boosted(self.pen_color),
                 ),
                 Tool::Eraser => {}
             }

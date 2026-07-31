@@ -45,6 +45,7 @@ impl App {
         for b in &buttons {
             match b.kind {
                 ui::ButtonKind::Color(c) => {
+                    let c = self.boosted(c);
                     push_quad(&mut vertices, &mut entries, b.rect, c);
                     if b.selected {
                         let cx = b.rect.x + b.rect.w * 0.5;
@@ -53,10 +54,10 @@ impl App {
                     }
                 }
                 ui::ButtonKind::ThicknessBar { selected_index } => {
-                    push_thickness_bar(&mut vertices, &mut entries, b.rect, selected_index, self.pen_color);
+                    push_thickness_bar(&mut vertices, &mut entries, b.rect, selected_index, self.boosted(self.pen_color));
                 }
                 ui::ButtonKind::Tool(tool) => {
-                    let color = if b.selected { self.pen_color } else { [0.6, 0.6, 0.6, 1.0] };
+                    let color = if b.selected { self.boosted(self.pen_color) } else { [0.6, 0.6, 0.6, 1.0] };
                     push_tool_icon(&mut vertices, &mut entries, tool, b.rect, color);
                 }
             }
