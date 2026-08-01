@@ -81,12 +81,16 @@ impl App {
             });
 
             self.registry.sync(&self.core, &self.image_pipeline, &mut self.scene);
+            let (view_min, view_max) = self.camera.world_view_bounds();
 
             pass.set_pipeline(&self.pipeline.pipeline);
             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
             let mut on_stroke_pipeline = true;
 
             for (id, item) in self.scene.iter_ordered_with_id() {
+                if !self.registry.is_visible(id, view_min, view_max) {
+                    continue;
+                }
                 match item {
                     CanvasItem::Stroke(s) => {
                         let Some(res) = self.registry.get_stroke(id) else { continue };

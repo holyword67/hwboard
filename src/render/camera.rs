@@ -64,4 +64,11 @@ impl Camera {
         ];
         self.center = [world_before[0] - offset[0] as f64, world_before[1] - offset[1] as f64];
     }
+
+    /// 현재 뷰포트가 world 좌표에서 덮는 범위(AABB). 컬링 판정에 씀.
+    pub fn world_view_bounds(&self) -> ([f64; 2], [f64; 2]) {
+        let a = self.screen_to_world([0.0, 0.0]);
+        let b = self.screen_to_world(self.viewport_size);
+        ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])])
+    }
 }
