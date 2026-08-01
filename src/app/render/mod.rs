@@ -134,9 +134,14 @@ impl App {
                             (res.origin[0] - self.camera.center[0]) as f32,
                             (res.origin[1] - self.camera.center[1]) as f32,
                         ];
-                        // 이미지는 부스트 대상 아님(원본 사진 색 왜곡 방지 — 이번 스코프 밖)
+                        // [정정, 2026.7.31] 이전엔 "색 왜곡 방지" 목적으로
+                        // boosted() 자체를 스킵했는데, 그 판단이 잘못됨 —
+                        // 여기서 곱하는 건 색조 변경이 아니라 scRGB 밝기
+                        // 기준(80nit) 정규화라 사진에도 동일하게 필요함.
+                        // 색조 자체는 (1,1,1)이라 boosted()를 곱해도 RGB
+                        // 비율은 안 바뀌고 밝기만 따라 올라감.
                         let immediate =
-                            DrawImmediate { offset, _pad: [0.0; 2], color: [1.0, 1.0, 1.0, 1.0] };
+                            DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted([1.0, 1.0, 1.0, 1.0]) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
                         pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
                         pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
