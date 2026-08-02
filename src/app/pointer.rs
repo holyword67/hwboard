@@ -197,17 +197,15 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 }
             }
             (Tool::Eraser, PointerEvent::Down(s)) => {
-                self.eraser_pressed = true;
                 self.erasing_removed.clear();
                 self.try_erase_at(s.pos);
             }
             (Tool::Eraser, PointerEvent::Move(s)) => {
-                if self.eraser_pressed {
+                if self.input.is_pen_down() {
                     self.try_erase_at(s.pos);
                 }
             }
             (Tool::Eraser, PointerEvent::Up(_)) => {
-                self.eraser_pressed = false;
                 if !self.erasing_removed.is_empty() {
                     let cmd = Box::new(DeleteItems { removed: std::mem::take(&mut self.erasing_removed) });
                     self.undo_stack.push_already_applied(cmd);

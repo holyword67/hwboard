@@ -69,7 +69,6 @@ pub struct App {
     geom_prev_pos: Option<[f64; 2]>,
     geom_pending: Option<PenPoint>,
     erasing_removed: Vec<(ItemId, CanvasItem, usize)>,
-    eraser_pressed: bool,
     /// Tool::Select에서 현재 선택된 아이템.
     selected_item: Option<ItemId>,
     /// Tool::Select에서 진행 중인 드래그(이동/리사이즈/회전) 상태.
@@ -124,7 +123,6 @@ impl App {
             geom_prev_pos: None,
             geom_pending: None,
             erasing_removed: Vec::new(),
-            eraser_pressed: false,
             selected_item: None,
             select_drag: None,
             pointer_captured_by_ui: false,

@@ -115,12 +115,31 @@ impl InputState {
                 Some(InputEvent::Pointer(self.begin(*x, *y, self.last_pressure, PointerSource::Pen)))
             }
             Event::PenMotion { x, y, .. } => {
-                self.last_pen_pos = [*x, *y];
-                self.moved(*x, *y, self.last_pressure, PointerSource::Pen).map(InputEvent::Pointer)
+                self.last_pen_pos = [*x, *y]; // 호버 중에도 위치는 계속 갱신(커서 아이콘 추적용)
+                if self.pointer_down && self.active_source == PointerSource::Pen {
+                    self.moved(*x, *y, self.last_pressure, PointerSource::Pen).map(InputEvent::Pointer)
+                } else {
+                    None // 접촉 없이 호버만 하는 중이면 Move 자체를 안 흘려보냄
+                }
             }
             Event::PenUp { x, y, .. } => {
                 self.last_pen_pos = [*x, *y];
                 Some(InputEvent::Pointer(self.end(*x, *y, self.last_pressure, PointerSource::Pen)))
+            }
+            Event::PenProximityOut { .. } => {
+                // 펜이 감지범위를 완전히 벗어남 — Down/Up 페어링이 어떤 이유로든
+                // 깨져서 pointer_down이 stuck-true인 상태를 여기서 강제로 되돌림.
+                // PenUp과 동일한 end() 경로를 재사용해서 별도 리셋 로직 없이 안전.
+                if self.pointer_down && self.active_source == PointerSource::Pen {
+                    Some(InputEvent::Pointer(self.end(
+                        self.last_pen_pos[0],
+                        self.last_pen_pos[1],
+                        self.last_pressure,
+                        PointerSource::Pen,
+                    )))
+                } else {
+                    None
+                }
             }
 
             Event::MouseButtonDown { mouse_btn: MouseButton::Left, which, x, y, .. } => {
