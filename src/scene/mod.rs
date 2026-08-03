@@ -61,11 +61,6 @@ impl Scene {
         self.removed.push(id);
     }
 
-    /// 렌더링용 — Z순서대로 순회
-    pub fn iter_ordered(&self) -> impl Iterator<Item = &CanvasItem> {
-        self.order.iter().filter_map(|id| self.items.get(id))
-    }
-
     pub fn iter_ordered_with_id(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
         self.order.iter().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }

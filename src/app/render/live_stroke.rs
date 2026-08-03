@@ -62,11 +62,11 @@ impl LiveStrokeGpu {
         self.synced_indices = self.index.write_suffix(core, &mesh.indices, self.synced_indices);
     }
 
-    pub(in crate::app) fn vertex_slice(&self) -> wgpu::BufferSlice {
+    pub(in crate::app) fn vertex_slice(&self) -> wgpu::BufferSlice<'_> {
         self.vertex.buffer().slice(..)
     }
 
-    pub(in crate::app) fn index_slice(&self) -> wgpu::BufferSlice {
+    pub(in crate::app) fn index_slice(&self) -> wgpu::BufferSlice<'_> {
         self.index.buffer().slice(..)
     }
 }
