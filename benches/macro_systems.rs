@@ -59,10 +59,8 @@ fn generate_circular_stroke(point_count: usize) -> Stroke {
 fn bench_tessellate(bencher: Bencher, point_count: usize) {
     bencher
         .with_inputs(|| generate_dummy_stroke(point_count))
-        .bench_local_values(|stroke| {
-            // Stroke를 받아 Mesh로 변환하는 과정을 측정
-            let mesh = tessellate_stroke(black_box(&stroke));
-            black_box(mesh);
+        .bench_refs(|stroke| {
+            tessellate_stroke(black_box(stroke))
         });
 }
 
