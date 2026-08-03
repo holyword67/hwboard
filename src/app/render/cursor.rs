@@ -21,39 +21,63 @@ use crate::ui;
 
 const ERASER_INDICATOR_DASH_COUNT: usize = 16;
 const ERASER_INDICATOR_LINE_WIDTH: f32 = 2.0;
-const ERASER_INDICATOR_COLOR: [f32; 4] = [0.2, 0.2, 0.2, 0.6];
+const ERASER_INDICATOR_COLOR: [f32; 4] = [
+    0.2, 0.2, 0.2, 0.6,
+];
 
 const SELECTION_LINE_WIDTH: f32 = 1.5;
-const SELECTION_COLOR: [f32; 4] = [0.1, 0.4, 0.9, 0.9];
+const SELECTION_COLOR: [f32; 4] = [
+    0.1, 0.4, 0.9, 0.9,
+];
 
 pub(super) fn draw_eraser_indicator(builder: &mut OverlayBuilder, center: [f32; 2], radius: f32) {
     let slots = ERASER_INDICATOR_DASH_COUNT * 2;
     for i in 0..ERASER_INDICATOR_DASH_COUNT {
         let a0 = (i * 2) as f32 / slots as f32 * std::f32::consts::TAU;
         let a1 = (i * 2 + 1) as f32 / slots as f32 * std::f32::consts::TAU;
-        let p0 = [center[0] + radius * a0.cos(), center[1] + radius * a0.sin()];
-        let p1 = [center[0] + radius * a1.cos(), center[1] + radius * a1.sin()];
+        let p0 = [
+            center[0] + radius * a0.cos(),
+            center[1] + radius * a0.sin(),
+        ];
+        let p1 = [
+            center[0] + radius * a1.cos(),
+            center[1] + radius * a1.sin(),
+        ];
         builder.push_line_segment(p0, p1, ERASER_INDICATOR_LINE_WIDTH, ERASER_INDICATOR_COLOR);
     }
 }
 
 fn draw_handle_square(builder: &mut OverlayBuilder, center: [f32; 2], size: f32) {
     let half = size * 0.5;
-    let rect = ui::Rect { x: center[0] - half, y: center[1] - half, w: size, h: size };
+    let rect = ui::Rect {
+        x: center[0] - half,
+        y: center[1] - half,
+        w: size,
+        h: size,
+    };
     builder.push_quad(rect, SELECTION_COLOR);
 }
 
 /// 선택된 아이템 위에 점선(을 흉내낸 얇은 실선) bbox + (도형이면)
 /// 리사이즈/회전 핸들을 그림.
-pub(super) fn draw_selection_overlay(builder: &mut OverlayBuilder, camera: &Camera, item: &CanvasItem) {
+pub(super) fn draw_selection_overlay(
+    builder: &mut OverlayBuilder,
+    camera: &Camera,
+    item: &CanvasItem,
+) {
     match item {
         CanvasItem::Shape(sh) => {
-            let corners_screen: Vec<[f32; 2]> =
-                sh.world_corners().iter().map(|&c| camera.world_to_screen(c)).collect();
+            let corners_screen: Vec<[f32; 2]> = sh
+                .world_corners()
+                .iter()
+                .map(|&c| camera.world_to_screen(c))
+                .collect();
             for i in 0..4 {
                 builder.push_line_segment(
-                    corners_screen[i], corners_screen[(i + 1) % 4],
-                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                    corners_screen[i],
+                    corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH,
+                    SELECTION_COLOR,
                 );
             }
             for c in &corners_screen {
@@ -62,23 +86,49 @@ pub(super) fn draw_selection_overlay(builder: &mut OverlayBuilder, camera: &Came
 
             let d = (crate::app::select::ROTATE_HANDLE_DISTANCE_SCREEN_PX / camera.zoom) as f64;
             let angle = sh.rotation as f64 - std::f64::consts::FRAC_PI_2;
-            let handle_world = [sh.center[0] + d * angle.cos(), sh.center[1] + d * angle.sin()];
+            let handle_world = [
+                sh.center[0] + d * angle.cos(),
+                sh.center[1] + d * angle.sin(),
+            ];
             let handle_screen = camera.world_to_screen(handle_world);
             let top_mid_screen = [
                 (corners_screen[0][0] + corners_screen[1][0]) * 0.5,
                 (corners_screen[0][1] + corners_screen[1][1]) * 0.5,
             ];
-            builder.push_line_segment(top_mid_screen, handle_screen, SELECTION_LINE_WIDTH, SELECTION_COLOR);
-            draw_handle_square(builder, handle_screen, crate::app::select::HANDLE_SIZE_SCREEN_PX);
+            builder.push_line_segment(
+                top_mid_screen,
+                handle_screen,
+                SELECTION_LINE_WIDTH,
+                SELECTION_COLOR,
+            );
+            draw_handle_square(
+                builder,
+                handle_screen,
+                crate::app::select::HANDLE_SIZE_SCREEN_PX,
+            );
         }
         CanvasItem::Image(_) => {
             let (min, max) = item.bounding_box();
-            let corners_world = [min, [max[0], min[1]], max, [min[0], max[1]]];
-            let corners_screen: Vec<[f32; 2]> = corners_world.iter().map(|&c| camera.world_to_screen(c)).collect();
+            let corners_world = [
+                min,
+                [
+                    max[0], min[1],
+                ],
+                max,
+                [
+                    min[0], max[1],
+                ],
+            ];
+            let corners_screen: Vec<[f32; 2]> = corners_world
+                .iter()
+                .map(|&c| camera.world_to_screen(c))
+                .collect();
             for i in 0..4 {
                 builder.push_line_segment(
-                    corners_screen[i], corners_screen[(i + 1) % 4],
-                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                    corners_screen[i],
+                    corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH,
+                    SELECTION_COLOR,
                 );
             }
             for c in &corners_screen {
@@ -87,12 +137,26 @@ pub(super) fn draw_selection_overlay(builder: &mut OverlayBuilder, camera: &Came
         }
         CanvasItem::Stroke(_) => {
             let (min, max) = item.bounding_box();
-            let corners_world = [min, [max[0], min[1]], max, [min[0], max[1]]];
-            let corners_screen: Vec<[f32; 2]> = corners_world.iter().map(|&c| camera.world_to_screen(c)).collect();
+            let corners_world = [
+                min,
+                [
+                    max[0], min[1],
+                ],
+                max,
+                [
+                    min[0], max[1],
+                ],
+            ];
+            let corners_screen: Vec<[f32; 2]> = corners_world
+                .iter()
+                .map(|&c| camera.world_to_screen(c))
+                .collect();
             for i in 0..4 {
                 builder.push_line_segment(
-                    corners_screen[i], corners_screen[(i + 1) % 4],
-                    SELECTION_LINE_WIDTH, SELECTION_COLOR,
+                    corners_screen[i],
+                    corners_screen[(i + 1) % 4],
+                    SELECTION_LINE_WIDTH,
+                    SELECTION_COLOR,
                 );
             }
             // 핸들 없음 — 이동만 가능.
@@ -119,7 +183,10 @@ pub(super) fn draw_tool_icon_at(
         Tool::Pen => {
             let local = |x: f32, y: f32| -> [f32; 2] {
                 let angle = std::f32::consts::FRAC_PI_4;
-                [x * angle.cos() - y * angle.sin(), x * angle.sin() + y * angle.cos()]
+                [
+                    x * angle.cos() - y * angle.sin(),
+                    x * angle.sin() + y * angle.cos(),
+                ]
             };
             let pw = s * 0.4;
             let ph = s * 0.8;
@@ -128,7 +195,10 @@ pub(super) fn draw_tool_icon_at(
             let tip_local = local(0.0, pt);
             let anchor = |x: f32, y: f32| -> [f32; 2] {
                 let l = local(x, y);
-                [cx + l[0] - tip_local[0], cy + l[1] - tip_local[1]]
+                [
+                    cx + l[0] - tip_local[0],
+                    cy + l[1] - tip_local[1],
+                ]
             };
 
             let tl = anchor(-pw, -ph);
@@ -144,16 +214,33 @@ pub(super) fn draw_tool_icon_at(
             builder.push_line_segment(br, tip, w, color);
         }
         Tool::Select => {
-            let p0_local = [-s * 0.4, -s * 0.7];
-            let p1_local = [s * 0.6, s * 0.4];
-            let p2_local = [0.0, s * 0.2];
-            let p3_local = [-s * 0.4, s * 0.8];
+            let p0_local = [
+                -s * 0.4,
+                -s * 0.7,
+            ];
+            let p1_local = [
+                s * 0.6,
+                s * 0.4,
+            ];
+            let p2_local = [
+                0.0,
+                s * 0.2,
+            ];
+            let p3_local = [
+                -s * 0.4,
+                s * 0.8,
+            ];
 
             let shift = |l: [f32; 2]| -> [f32; 2] {
-                [cx + l[0] - p0_local[0], cy + l[1] - p0_local[1]]
+                [
+                    cx + l[0] - p0_local[0],
+                    cy + l[1] - p0_local[1],
+                ]
             };
 
-            let p0 = [cx, cy];
+            let p0 = [
+                cx, cy,
+            ];
             let p1 = shift(p1_local);
             let p2 = shift(p2_local);
             let p3 = shift(p3_local);

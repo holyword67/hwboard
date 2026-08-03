@@ -13,8 +13,14 @@ use std::os::raw::c_void;
 /// png/bmp 먼저 시도(가장 흔한 클립보드 이미지 형식), 나머지는 폴백.
 /// image 크레이트가 디코딩만 성공하면 되니 mime 이름 자체의 정확도보다
 /// "클립보드에 그 타입으로 데이터가 있는지"만 중요함.
-const CANDIDATE_MIME_TYPES: &[&str] =
-    &["image/png", "image/bmp", "image/webp", "image/jpeg", "image/jpg", "image/gif"];
+const CANDIDATE_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/bmp",
+    "image/webp",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+];
 
 pub fn read_clipboard_image_bytes() -> Option<Vec<u8>> {
     for mime in CANDIDATE_MIME_TYPES {

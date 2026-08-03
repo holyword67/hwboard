@@ -1,11 +1,11 @@
 // ============================================================
 // src/scene/mod.rs
 // ============================================================
-mod item;
 mod command;
+mod item;
 
-pub use item::*;
 pub use command::*;
+pub use item::*;
 
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ const UNDO_STACK_LIMIT: usize = 100;
 
 pub struct Scene {
     items: HashMap<ItemId, CanvasItem>,
-    order: Vec<ItemId>,      // 삽입순서 = Z순서
+    order: Vec<ItemId>, // 삽입순서 = Z순서
     next_id: ItemId,
 
     // 이번 프레임에 실제로 바뀐 아이템만 기록 — GpuResourceRegistry가
@@ -62,11 +62,16 @@ impl Scene {
     }
 
     pub fn iter_ordered_with_id(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
-        self.order.iter().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
+        self.order
+            .iter()
+            .filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }
 
     pub fn iter_ordered_with_id_rev(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
-        self.order.iter().rev().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }
 
     pub fn z_index_of(&self, id: ItemId) -> Option<usize> {
@@ -124,7 +129,10 @@ pub struct UndoStack {
 
 impl UndoStack {
     pub fn new() -> Self {
-        Self { undo: Vec::new(), redo: Vec::new() }
+        Self {
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
     }
 
     pub fn execute(&mut self, cmd: Box<dyn Command>, scene: &mut Scene) {

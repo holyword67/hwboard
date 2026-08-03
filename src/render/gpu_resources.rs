@@ -47,8 +47,14 @@ pub struct ImageGpuResource {
 /// API(world_corners/center/stroke_width)만으로 충분해서 여기서 계산.
 fn shape_local_padded_bbox(sh: &Shape) -> ([f64; 2], [f64; 2]) {
     let corners = sh.world_corners();
-    let mut min = [f64::MAX, f64::MAX];
-    let mut max = [f64::MIN, f64::MIN];
+    let mut min = [
+        f64::MAX,
+        f64::MAX,
+    ];
+    let mut max = [
+        f64::MIN,
+        f64::MIN,
+    ];
     for c in corners {
         let lx = c[0] - sh.center[0];
         let ly = c[1] - sh.center[1];
@@ -58,7 +64,16 @@ fn shape_local_padded_bbox(sh: &Shape) -> ([f64; 2], [f64; 2]) {
         max[1] = max[1].max(ly);
     }
     let pad = sh.stroke_width as f64 * 0.5;
-    ([min[0] - pad, min[1] - pad], [max[0] + pad, max[1] + pad])
+    (
+        [
+            min[0] - pad,
+            min[1] - pad,
+        ],
+        [
+            max[0] + pad,
+            max[1] + pad,
+        ],
+    )
 }
 
 pub struct GpuResourceRegistry {
@@ -102,7 +117,13 @@ impl GpuResourceRegistry {
         }
     }
 
-    fn sync_item(&mut self, core: &GpuCore, image_pipeline: &ImagePipeline, scene: &mut Scene, id: ItemId) {
+    fn sync_item(
+        &mut self,
+        core: &GpuCore,
+        image_pipeline: &ImagePipeline,
+        scene: &mut Scene,
+        id: ItemId,
+    ) {
         // 어떤 타입인지만 먼저 확인(빌려온 참조는 이 블록 안에서만 삶).
         let kind = match scene.item(id) {
             Some(CanvasItem::Stroke(_)) => 0,
@@ -120,23 +141,39 @@ impl GpuResourceRegistry {
     fn sync_stroke(&mut self, core: &GpuCore, scene: &mut Scene, id: ItemId) {
         // 1) 읽기 전용으로 필요한 걸 전부 owned 값으로 뽑아냄 — 이 블록이
         //    끝나면 scene에 대한 참조가 사라지므로 이후 &mut scene 호출 가능.
-        struct Plan { anchor: [f64; 2], build: Option<(crate::render::tessellate::StrokeMesh, ([f64; 2], [f64; 2]))> }
+        struct Plan {
+            anchor: [f64; 2],
+            build: Option<(crate::render::tessellate::StrokeMesh, ([f64; 2], [f64; 2]))>,
+        }
         let plan = {
-            let Some(CanvasItem::Stroke(s)) = scene.item(id) else { return };
+            let Some(CanvasItem::Stroke(s)) = scene.item(id) else {
+                return;
+            };
             let needs_build = !self.strokes.contains_key(&id) || s.geometry_dirty;
             if needs_build {
                 let mesh = tessellate_stroke(s);
                 let bbox = local_padded_bbox(s);
-                Plan { anchor: s.anchor, build: Some((mesh, bbox)) }
+                Plan {
+                    anchor: s.anchor,
+                    build: Some((mesh, bbox)),
+                }
             } else {
-                Plan { anchor: s.anchor, build: None }
+                Plan {
+                    anchor: s.anchor,
+                    build: None,
+                }
             }
         };
 
         match plan.build {
             Some((mesh, bbox)) => {
                 let entry = self.strokes.entry(id).or_insert_with(|| StrokeGpuResource {
-                    mesh: GrowableMesh::new(core, INITIAL_STROKE_VERTEX_CAPACITY, INITIAL_STROKE_INDEX_CAPACITY, "stroke_mesh"),
+                    mesh: GrowableMesh::new(
+                        core,
+                        INITIAL_STROKE_VERTEX_CAPACITY,
+                        INITIAL_STROKE_INDEX_CAPACITY,
+                        "stroke_mesh",
+                    ),
                     origin: plan.anchor,
                 });
                 entry.mesh.upload(core, &mesh.vertices, &mesh.indices);
@@ -154,24 +191,40 @@ impl GpuResourceRegistry {
     }
 
     fn sync_shape(&mut self, core: &GpuCore, scene: &mut Scene, id: ItemId) {
-        struct Plan { anchor: [f64; 2], build: Option<(crate::render::tessellate::StrokeMesh, ([f64; 2], [f64; 2]))> }
+        struct Plan {
+            anchor: [f64; 2],
+            build: Option<(crate::render::tessellate::StrokeMesh, ([f64; 2], [f64; 2]))>,
+        }
         let plan = {
-            let Some(CanvasItem::Shape(sh)) = scene.item(id) else { return };
+            let Some(CanvasItem::Shape(sh)) = scene.item(id) else {
+                return;
+            };
             let needs_build = !self.shapes.contains_key(&id) || sh.geometry_dirty;
             if needs_build {
                 let virtual_stroke = sh.as_stroke(); // anchor=center, points=rotated_local_outline
                 let mesh = tessellate_stroke(&virtual_stroke);
                 let bbox = shape_local_padded_bbox(sh);
-                Plan { anchor: sh.center, build: Some((mesh, bbox)) }
+                Plan {
+                    anchor: sh.center,
+                    build: Some((mesh, bbox)),
+                }
             } else {
-                Plan { anchor: sh.center, build: None }
+                Plan {
+                    anchor: sh.center,
+                    build: None,
+                }
             }
         };
 
         match plan.build {
             Some((mesh, bbox)) => {
                 let entry = self.shapes.entry(id).or_insert_with(|| StrokeGpuResource {
-                    mesh: GrowableMesh::new(core, INITIAL_SHAPE_VERTEX_CAPACITY, INITIAL_SHAPE_INDEX_CAPACITY, "shape_mesh"),
+                    mesh: GrowableMesh::new(
+                        core,
+                        INITIAL_SHAPE_VERTEX_CAPACITY,
+                        INITIAL_SHAPE_INDEX_CAPACITY,
+                        "shape_mesh",
+                    ),
                     origin: plan.anchor,
                 });
                 entry.mesh.upload(core, &mesh.vertices, &mesh.indices);
@@ -188,29 +241,63 @@ impl GpuResourceRegistry {
         }
     }
 
-    fn sync_image(&mut self, core: &GpuCore, image_pipeline: &ImagePipeline, scene: &mut Scene, id: ItemId) {
+    fn sync_image(
+        &mut self,
+        core: &GpuCore,
+        image_pipeline: &ImagePipeline,
+        scene: &mut Scene,
+        id: ItemId,
+    ) {
         enum Plan {
-            Create { top_left: [f64; 2], size: [f64; 2], pixel_w: u32, pixel_h: u32, rgba: std::sync::Arc<[u8]> },
-            ResizeOrMove { top_left: [f64; 2], size: [f64; 2], size_changed: bool },
+            Create {
+                top_left: [f64; 2],
+                size: [f64; 2],
+                pixel_w: u32,
+                pixel_h: u32,
+                rgba: std::sync::Arc<[u8]>,
+            },
+            ResizeOrMove {
+                top_left: [f64; 2],
+                size: [f64; 2],
+                size_changed: bool,
+            },
         }
         let plan = {
-            let Some(CanvasItem::Image(img)) = scene.item(id) else { return };
+            let Some(CanvasItem::Image(img)) = scene.item(id) else {
+                return;
+            };
             if !self.images.contains_key(&id) {
                 Plan::Create {
-                    top_left: img.top_left, size: img.size,
-                    pixel_w: img.pixel_width, pixel_h: img.pixel_height,
+                    top_left: img.top_left,
+                    size: img.size,
+                    pixel_w: img.pixel_width,
+                    pixel_h: img.pixel_height,
                     rgba: img.rgba.clone(),
                 }
             } else {
-                Plan::ResizeOrMove { top_left: img.top_left, size: img.size, size_changed: img.geometry_dirty }
+                Plan::ResizeOrMove {
+                    top_left: img.top_left,
+                    size: img.size,
+                    size_changed: img.geometry_dirty,
+                }
             }
         };
 
         match plan {
-            Plan::Create { top_left, size, pixel_w, pixel_h, rgba } => {
+            Plan::Create {
+                top_left,
+                size,
+                pixel_w,
+                pixel_h,
+                rgba,
+            } => {
                 let texture = core.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("pasted_image_texture"),
-                    size: wgpu::Extent3d { width: pixel_w, height: pixel_h, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: pixel_w,
+                        height: pixel_h,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -219,61 +306,171 @@ impl GpuResourceRegistry {
                     view_formats: &[],
                 });
                 core.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
                     &rgba,
-                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * pixel_w), rows_per_image: Some(pixel_h) },
-                    wgpu::Extent3d { width: pixel_w, height: pixel_h, depth_or_array_layers: 1 },
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * pixel_w),
+                        rows_per_image: Some(pixel_h),
+                    },
+                    wgpu::Extent3d {
+                        width: pixel_w,
+                        height: pixel_h,
+                        depth_or_array_layers: 1,
+                    },
                 );
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let bind_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("image_bind_group"),
                     layout: &image_pipeline.texture_bgl,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&image_pipeline.sampler) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&image_pipeline.sampler),
+                        },
                     ],
                 });
 
                 let (w, h) = (size[0] as f32, size[1] as f32);
                 let verts = [
-                    ImageVertex { pos: [0.0, 0.0], uv: [0.0, 0.0] },
-                    ImageVertex { pos: [w, 0.0], uv: [1.0, 0.0] },
-                    ImageVertex { pos: [0.0, h], uv: [0.0, 1.0] },
-                    ImageVertex { pos: [w, h], uv: [1.0, 1.0] },
+                    ImageVertex {
+                        pos: [
+                            0.0, 0.0,
+                        ],
+                        uv: [
+                            0.0, 0.0,
+                        ],
+                    },
+                    ImageVertex {
+                        pos: [
+                            w, 0.0,
+                        ],
+                        uv: [
+                            1.0, 0.0,
+                        ],
+                    },
+                    ImageVertex {
+                        pos: [
+                            0.0, h,
+                        ],
+                        uv: [
+                            0.0, 1.0,
+                        ],
+                    },
+                    ImageVertex {
+                        pos: [
+                            w, h,
+                        ],
+                        uv: [
+                            1.0, 1.0,
+                        ],
+                    },
                 ];
                 // 인덱스는 항상 [0,1,2,1,3,2] 고정값 — 이 아이템의 수명 내내
                 // 다시 안 바뀌므로 최초 1회만 생성.
-                let indices: [u32; 6] = [0, 1, 2, 1, 3, 2];
+                let indices: [u32; 6] = [
+                    0, 1, 2, 1, 3, 2,
+                ];
 
-                let vertex_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("image_vertex_buf"),
-                    contents: bytemuck::cast_slice(&verts),
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
-                let index_buf = core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("image_index_buf"),
-                    contents: bytemuck::cast_slice(&indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
+                let vertex_buf =
+                    core.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("image_vertex_buf"),
+                            contents: bytemuck::cast_slice(&verts),
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        });
+                let index_buf = core
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("image_index_buf"),
+                        contents: bytemuck::cast_slice(&indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
 
-                self.images.insert(id, ImageGpuResource { bind_group, vertex_buf, index_buf, origin: top_left });
-                self.local_bboxes.insert(id, ([0.0, 0.0], size));
+                self.images.insert(
+                    id,
+                    ImageGpuResource {
+                        bind_group,
+                        vertex_buf,
+                        index_buf,
+                        origin: top_left,
+                    },
+                );
+                self.local_bboxes.insert(
+                    id,
+                    (
+                        [
+                            0.0, 0.0,
+                        ],
+                        size,
+                    ),
+                );
                 scene.mark_image_clean(id);
             }
-            Plan::ResizeOrMove { top_left, size, size_changed } => {
+            Plan::ResizeOrMove {
+                top_left,
+                size,
+                size_changed,
+            } => {
                 if size_changed {
                     let (w, h) = (size[0] as f32, size[1] as f32);
                     let verts = [
-                        ImageVertex { pos: [0.0, 0.0], uv: [0.0, 0.0] },
-                        ImageVertex { pos: [w, 0.0], uv: [1.0, 0.0] },
-                        ImageVertex { pos: [0.0, h], uv: [0.0, 1.0] },
-                        ImageVertex { pos: [w, h], uv: [1.0, 1.0] },
+                        ImageVertex {
+                            pos: [
+                                0.0, 0.0,
+                            ],
+                            uv: [
+                                0.0, 0.0,
+                            ],
+                        },
+                        ImageVertex {
+                            pos: [
+                                w, 0.0,
+                            ],
+                            uv: [
+                                1.0, 0.0,
+                            ],
+                        },
+                        ImageVertex {
+                            pos: [
+                                0.0, h,
+                            ],
+                            uv: [
+                                0.0, 1.0,
+                            ],
+                        },
+                        ImageVertex {
+                            pos: [
+                                w, h,
+                            ],
+                            uv: [
+                                1.0, 1.0,
+                            ],
+                        },
                     ];
                     // 고정 4정점 크기라 재할당 없이 항상 write_buffer만.
                     if let Some(res) = self.images.get(&id) {
-                        core.queue.write_buffer(&res.vertex_buf, 0, bytemuck::cast_slice(&verts));
+                        core.queue
+                            .write_buffer(&res.vertex_buf, 0, bytemuck::cast_slice(&verts));
                     }
-                    self.local_bboxes.insert(id, ([0.0, 0.0], size));
+                    self.local_bboxes.insert(
+                        id,
+                        (
+                            [
+                                0.0, 0.0,
+                            ],
+                            size,
+                        ),
+                    );
                     scene.mark_image_clean(id);
                 }
                 if let Some(res) = self.images.get_mut(&id) {
@@ -299,12 +496,27 @@ impl GpuResourceRegistry {
     /// 그대로 넘겨줌 — 로컬 bbox 캐시 + 최신 origin을 합쳐서 world bbox를
     /// 매번 구함(덧셈 4번, O(1)). 캐시가 없는 예외적 타이밍엔 기존과
     /// 동일하게 "보인다"로 안전하게 처리.
-    pub fn is_visible(&self, id: ItemId, origin: [f64; 2], view_min: [f64; 2], view_max: [f64; 2]) -> bool {
+    pub fn is_visible(
+        &self,
+        id: ItemId,
+        origin: [f64; 2],
+        view_min: [f64; 2],
+        view_max: [f64; 2],
+    ) -> bool {
         match self.local_bboxes.get(&id) {
             Some((lmin, lmax)) => {
-                let min = [lmin[0] + origin[0], lmin[1] + origin[1]];
-                let max = [lmax[0] + origin[0], lmax[1] + origin[1]];
-                !(max[0] < view_min[0] || min[0] > view_max[0] || max[1] < view_min[1] || min[1] > view_max[1])
+                let min = [
+                    lmin[0] + origin[0],
+                    lmin[1] + origin[1],
+                ];
+                let max = [
+                    lmax[0] + origin[0],
+                    lmax[1] + origin[1],
+                ];
+                !(max[0] < view_min[0]
+                    || min[0] > view_max[0]
+                    || max[1] < view_min[1]
+                    || min[1] > view_max[1])
             }
             None => true,
         }

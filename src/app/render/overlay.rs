@@ -65,33 +65,107 @@ impl OverlayBuilder {
         let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
         let offset = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&[
-            Vertex { pos: [x0, y0] },
-            Vertex { pos: [x1, y0] },
-            Vertex { pos: [x0, y1] },
-            Vertex { pos: [x1, y0] },
-            Vertex { pos: [x1, y1] },
-            Vertex { pos: [x0, y1] },
+            Vertex {
+                pos: [
+                    x0, y0,
+                ],
+            },
+            Vertex {
+                pos: [
+                    x1, y0,
+                ],
+            },
+            Vertex {
+                pos: [
+                    x0, y1,
+                ],
+            },
+            Vertex {
+                pos: [
+                    x1, y0,
+                ],
+            },
+            Vertex {
+                pos: [
+                    x1, y1,
+                ],
+            },
+            Vertex {
+                pos: [
+                    x0, y1,
+                ],
+            },
         ]);
-        self.entries.push(OverlayEntry { offset, count: 6, color });
+        self.entries.push(OverlayEntry {
+            offset,
+            count: 6,
+            color,
+        });
     }
 
-    pub(in crate::app) fn push_line_segment(&mut self, p0: [f32; 2], p1: [f32; 2], width: f32, color: [f32; 4]) {
-        let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+    pub(in crate::app) fn push_line_segment(
+        &mut self,
+        p0: [f32; 2],
+        p1: [f32; 2],
+        width: f32,
+        color: [f32; 4],
+    ) {
+        let dir = [
+            p1[0] - p0[0],
+            p1[1] - p0[1],
+        ];
         let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
         if len < f32::EPSILON {
             return;
         }
-        let normal = [-dir[1] / len, dir[0] / len];
+        let normal = [
+            -dir[1] / len,
+            dir[0] / len,
+        ];
         let hw = width * 0.5;
         let offset = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&[
-            Vertex { pos: [p0[0] + normal[0] * hw, p0[1] + normal[1] * hw] },
-            Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
-            Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
-            Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
-            Vertex { pos: [p1[0] - normal[0] * hw, p1[1] - normal[1] * hw] },
-            Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+            Vertex {
+                pos: [
+                    p0[0] + normal[0] * hw,
+                    p0[1] + normal[1] * hw,
+                ],
+            },
+            Vertex {
+                pos: [
+                    p0[0] - normal[0] * hw,
+                    p0[1] - normal[1] * hw,
+                ],
+            },
+            Vertex {
+                pos: [
+                    p1[0] + normal[0] * hw,
+                    p1[1] + normal[1] * hw,
+                ],
+            },
+            Vertex {
+                pos: [
+                    p0[0] - normal[0] * hw,
+                    p0[1] - normal[1] * hw,
+                ],
+            },
+            Vertex {
+                pos: [
+                    p1[0] - normal[0] * hw,
+                    p1[1] - normal[1] * hw,
+                ],
+            },
+            Vertex {
+                pos: [
+                    p1[0] + normal[0] * hw,
+                    p1[1] + normal[1] * hw,
+                ],
+            },
         ]);
-        self.entries.push(OverlayEntry { offset, count: 6, color });
+        self.entries.push(OverlayEntry {
+            offset,
+            count: 6,
+            color,
+        });
     }
 }

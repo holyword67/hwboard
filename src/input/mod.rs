@@ -82,11 +82,17 @@ impl InputState {
             last_pressure: 1.0,
             pointer_down: false,
             active_source: PointerSource::Mouse,
-            last_significant_pos: [0.0, 0.0],
+            last_significant_pos: [
+                0.0, 0.0,
+            ],
             last_move_at: Instant::now(),
             hold_fired: false,
-            last_mouse_pos: [0.0, 0.0],
-            last_pen_pos: [0.0, 0.0],
+            last_mouse_pos: [
+                0.0, 0.0,
+            ],
+            last_pen_pos: [
+                0.0, 0.0,
+            ],
         }
     }
 
@@ -104,29 +110,64 @@ impl InputState {
 
     pub fn process_event(&mut self, event: &Event) -> Option<InputEvent> {
         match event {
-            Event::PenAxis { axis, value, .. } => {
+            Event::PenAxis {
+                axis,
+                value,
+                ..
+            } => {
                 if *axis == PenAxis::Pressure {
                     self.last_pressure = *value;
                 }
                 None
             }
-            Event::PenDown { x, y, .. } => {
-                self.last_pen_pos = [*x, *y];
-                Some(InputEvent::Pointer(self.begin(*x, *y, self.last_pressure, PointerSource::Pen)))
+            Event::PenDown {
+                x,
+                y,
+                ..
+            } => {
+                self.last_pen_pos = [
+                    *x, *y,
+                ];
+                Some(InputEvent::Pointer(self.begin(
+                    *x,
+                    *y,
+                    self.last_pressure,
+                    PointerSource::Pen,
+                )))
             }
-            Event::PenMotion { x, y, .. } => {
-                self.last_pen_pos = [*x, *y]; // 호버 중에도 위치는 계속 갱신(커서 아이콘 추적용)
+            Event::PenMotion {
+                x,
+                y,
+                ..
+            } => {
+                self.last_pen_pos = [
+                    *x, *y,
+                ]; // 호버 중에도 위치는 계속 갱신(커서 아이콘 추적용)
                 if self.pointer_down && self.active_source == PointerSource::Pen {
-                    self.moved(*x, *y, self.last_pressure, PointerSource::Pen).map(InputEvent::Pointer)
+                    self.moved(*x, *y, self.last_pressure, PointerSource::Pen)
+                        .map(InputEvent::Pointer)
                 } else {
                     None // 접촉 없이 호버만 하는 중이면 Move 자체를 안 흘려보냄
                 }
             }
-            Event::PenUp { x, y, .. } => {
-                self.last_pen_pos = [*x, *y];
-                Some(InputEvent::Pointer(self.end(*x, *y, self.last_pressure, PointerSource::Pen)))
+            Event::PenUp {
+                x,
+                y,
+                ..
+            } => {
+                self.last_pen_pos = [
+                    *x, *y,
+                ];
+                Some(InputEvent::Pointer(self.end(
+                    *x,
+                    *y,
+                    self.last_pressure,
+                    PointerSource::Pen,
+                )))
             }
-            Event::PenProximityOut { .. } => {
+            Event::PenProximityOut {
+                ..
+            } => {
                 // 펜이 감지범위를 완전히 벗어남 — Down/Up 페어링이 어떤 이유로든
                 // 깨져서 pointer_down이 stuck-true인 상태를 여기서 강제로 되돌림.
                 // PenUp과 동일한 end() 경로를 재사용해서 별도 리셋 로직 없이 안전.
@@ -142,38 +183,80 @@ impl InputState {
                 }
             }
 
-            Event::MouseButtonDown { mouse_btn: MouseButton::Left, which, x, y, .. } => {
+            Event::MouseButtonDown {
+                mouse_btn: MouseButton::Left,
+                which,
+                x,
+                y,
+                ..
+            } => {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
-                self.last_mouse_pos = [*x, *y];
-                Some(InputEvent::Pointer(self.begin(*x, *y, 1.0, PointerSource::Mouse)))
+                self.last_mouse_pos = [
+                    *x, *y,
+                ];
+                Some(InputEvent::Pointer(self.begin(
+                    *x,
+                    *y,
+                    1.0,
+                    PointerSource::Mouse,
+                )))
             }
-            Event::MouseMotion { which, x, y, .. } => {
+            Event::MouseMotion {
+                which,
+                x,
+                y,
+                ..
+            } => {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
-                self.last_mouse_pos = [*x, *y];
+                self.last_mouse_pos = [
+                    *x, *y,
+                ];
                 if self.pointer_down && self.active_source == PointerSource::Mouse {
-                    self.moved(*x, *y, 1.0, PointerSource::Mouse).map(InputEvent::Pointer)
+                    self.moved(*x, *y, 1.0, PointerSource::Mouse)
+                        .map(InputEvent::Pointer)
                 } else {
                     None
                 }
             }
-            Event::MouseButtonUp { mouse_btn: MouseButton::Left, which, x, y, .. } => {
+            Event::MouseButtonUp {
+                mouse_btn: MouseButton::Left,
+                which,
+                x,
+                y,
+                ..
+            } => {
                 if is_pen_synthesized(*which) {
                     return None;
                 }
-                self.last_mouse_pos = [*x, *y];
-                Some(InputEvent::Pointer(self.end(*x, *y, 1.0, PointerSource::Mouse)))
+                self.last_mouse_pos = [
+                    *x, *y,
+                ];
+                Some(InputEvent::Pointer(self.end(
+                    *x,
+                    *y,
+                    1.0,
+                    PointerSource::Mouse,
+                )))
             }
 
-            Event::MouseButtonDown { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
-                Some(InputEvent::MouseSideButton { button: *btn, pressed: true })
-            }
-            Event::MouseButtonUp { mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2), .. } => {
-                Some(InputEvent::MouseSideButton { button: *btn, pressed: false })
-            }
+            Event::MouseButtonDown {
+                mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2),
+                ..
+            } => Some(InputEvent::MouseSideButton {
+                button: *btn,
+                pressed: true,
+            }),
+            Event::MouseButtonUp {
+                mouse_btn: btn @ (MouseButton::X1 | MouseButton::X2),
+                ..
+            } => Some(InputEvent::MouseSideButton {
+                button: *btn,
+                pressed: false,
+            }),
             _ => None,
         }
     }
@@ -197,24 +280,52 @@ impl InputState {
         self.pointer_down = true;
         self.active_source = source;
         self.hold_fired = false;
-        self.last_significant_pos = [x, y];
+        self.last_significant_pos = [
+            x, y,
+        ];
         self.last_move_at = Instant::now();
-        PointerEvent::Down(InputSample { pos: [x, y], pressure, source })
+        PointerEvent::Down(InputSample {
+            pos: [
+                x, y,
+            ],
+            pressure,
+            source,
+        })
     }
 
-    fn moved(&mut self, x: f32, y: f32, pressure: f32, source: PointerSource) -> Option<PointerEvent> {
+    fn moved(
+        &mut self,
+        x: f32,
+        y: f32,
+        pressure: f32,
+        source: PointerSource,
+    ) -> Option<PointerEvent> {
         let dx = x - self.last_significant_pos[0];
         let dy = y - self.last_significant_pos[1];
         if (dx * dx + dy * dy).sqrt() > MOVE_JITTER_PX {
-            self.last_significant_pos = [x, y];
+            self.last_significant_pos = [
+                x, y,
+            ];
             self.last_move_at = Instant::now();
             self.hold_fired = false;
         }
-        Some(PointerEvent::Move(InputSample { pos: [x, y], pressure, source }))
+        Some(PointerEvent::Move(InputSample {
+            pos: [
+                x, y,
+            ],
+            pressure,
+            source,
+        }))
     }
 
     fn end(&mut self, x: f32, y: f32, pressure: f32, source: PointerSource) -> PointerEvent {
         self.pointer_down = false;
-        PointerEvent::Up(InputSample { pos: [x, y], pressure, source })
+        PointerEvent::Up(InputSample {
+            pos: [
+                x, y,
+            ],
+            pressure,
+            source,
+        })
     }
 }

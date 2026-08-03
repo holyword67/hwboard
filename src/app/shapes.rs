@@ -18,16 +18,18 @@ use crate::scene::{PenPoint, Shape, ShapeKind, Stroke};
 
 pub(super) struct SnapData {
     pub(super) kind: ShapeKind,
-    pub(super) center: [f64; 2],           // 원/사각형: 회전+스케일 기준 중심(고정)
-    pub(super) initial_pen: [f64; 2],       // 스냅된 순간의 펜 위치
+    pub(super) center: [f64; 2], // 원/사각형: 회전+스케일 기준 중심(고정)
+    pub(super) initial_pen: [f64; 2], // 스냅된 순간의 펜 위치
     pub(super) initial_half_extent: [f64; 2],
     pub(super) initial_rotation: f32,
-    pub(super) line_start: [f64; 2],        // 직선 전용: 고정된 시작점
+    pub(super) line_start: [f64; 2], // 직선 전용: 고정된 시작점
 }
 
 /// RDP(Ramer-Douglas-Peucker) 알고리즘으로 자잘한 곡선을 단순한 다각형으로 축약합니다.
 fn rdp(points: &[PenPoint], epsilon: f64, out: &mut Vec<PenPoint>) {
-    if points.is_empty() { return; }
+    if points.is_empty() {
+        return;
+    }
 
     let mut dmax = 0.0;
     let mut index = 0;
@@ -59,11 +61,15 @@ fn rdp(points: &[PenPoint], epsilon: f64, out: &mut Vec<PenPoint>) {
 /// 자유필기 스트로크를 분석해서 완벽한 기하학적 Shape로 인식을 시도.
 /// 성공하면 (초기 Shape, 라이브 드래그용 SnapData)를 돌려줌.
 pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
-    if stroke.points.len() < 10 { return None; }
+    if stroke.points.len() < 10 {
+        return None;
+    }
 
     let (min, max) = crate::scene::stroke_bbox(stroke);
     let diag = ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2)).sqrt();
-    if diag < 10.0 { return None; }
+    if diag < 10.0 {
+        return None;
+    }
 
     let first = stroke.points.first().unwrap().pos;
     let last = stroke.points.last().unwrap().pos;
@@ -72,12 +78,18 @@ pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
     let closed = start_end_dist < diag * 0.2;
 
     if !closed {
-        let mid = [(first[0] + last[0]) * 0.5, (first[1] + last[1]) * 0.5];
+        let mid = [
+            (first[0] + last[0]) * 0.5,
+            (first[1] + last[1]) * 0.5,
+        ];
         let vx = last[0] - first[0];
         let vy = last[1] - first[1];
         let length = (vx * vx + vy * vy).sqrt();
         let rotation = vy.atan2(vx) as f32;
-        let half_extent = [length * 0.5, 0.0];
+        let half_extent = [
+            length * 0.5,
+            0.0,
+        ];
 
         let shape = Shape {
             kind: ShapeKind::Line,
@@ -118,8 +130,14 @@ pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
         ShapeKind::Circle
     };
 
-    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
-    let half_extent = [(max[0] - min[0]) * 0.5, (max[1] - min[1]) * 0.5];
+    let center = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+    ];
+    let half_extent = [
+        (max[0] - min[0]) * 0.5,
+        (max[1] - min[1]) * 0.5,
+    ];
 
     let shape = Shape {
         kind,

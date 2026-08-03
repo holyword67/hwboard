@@ -7,7 +7,7 @@
 // 객체를 참조하므로 global_bind_group도 공유 가능.
 
 use crate::gpu::core::GpuCore;
-use crate::render::pipeline::{Vertex, IMMEDIATE_SIZE};
+use crate::render::pipeline::{IMMEDIATE_SIZE, Vertex};
 
 pub struct UiPipeline {
     pub pipeline: wgpu::RenderPipeline,
@@ -15,55 +15,69 @@ pub struct UiPipeline {
 
 impl UiPipeline {
     pub fn new(core: &GpuCore, global_bgl: &wgpu::BindGroupLayout) -> Self {
-        let shader = core.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ui_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("stroke.wgsl").into()),
-        });
+        let shader = core
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("ui_shader"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("stroke.wgsl").into()),
+            });
 
-        let layout = core.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ui_pipeline_layout"),
-            bind_group_layouts: &[Some(global_bgl)],
-            immediate_size: IMMEDIATE_SIZE,
-        });
+        let layout = core
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ui_pipeline_layout"),
+                bind_group_layouts: &[Some(global_bgl)],
+                immediate_size: IMMEDIATE_SIZE,
+            });
 
-        let pipeline = core.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui_pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_ui_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: 0,
-                        format: wgpu::VertexFormat::Float32x2,
-                    }],
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: core.config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 4, // 4x MSAA
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = core
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("ui_pipeline"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_ui_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &[
+                                wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 0,
+                                    format: wgpu::VertexFormat::Float32x2,
+                                },
+                            ],
+                        }),
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: core.config.format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                    ],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 4, // 4x MSAA
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
 
-        Self { pipeline }
+        Self {
+            pipeline,
+        }
     }
 }

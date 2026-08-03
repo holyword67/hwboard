@@ -27,7 +27,13 @@ impl UiCache {
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass) {
         pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         for e in &self.entries {
-            let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color: e.color };
+            let immediate = DrawImmediate {
+                offset: [
+                    0.0, 0.0,
+                ],
+                _pad: [0.0; 2],
+                color: e.color,
+            };
             pass.set_immediates(0, bytemuck::bytes_of(&immediate));
             pass.draw(e.start..e.start + e.count, 0..1);
         }
@@ -41,7 +47,12 @@ impl App {
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut entries: Vec<UiDrawEntry> = Vec::new();
 
-        let buttons = ui::layout(self.camera.viewport_size, self.tool, self.pen_color, self.pen_width);
+        let buttons = ui::layout(
+            self.camera.viewport_size,
+            self.tool,
+            self.pen_color,
+            self.pen_width,
+        );
         for b in &buttons {
             match b.kind {
                 ui::ButtonKind::Color(c) => {
@@ -50,26 +61,54 @@ impl App {
                     if b.selected {
                         let cx = b.rect.x + b.rect.w * 0.5;
                         let cy = b.rect.y - 6.0;
-                        push_triangle_inverted(&mut vertices, &mut entries, [cx, cy], 8.0, c);
+                        push_triangle_inverted(
+                            &mut vertices,
+                            &mut entries,
+                            [
+                                cx, cy,
+                            ],
+                            8.0,
+                            c,
+                        );
                     }
                 }
-                ui::ButtonKind::ThicknessBar { selected_index } => {
-                    push_thickness_bar(&mut vertices, &mut entries, b.rect, selected_index, self.boosted(self.pen_color));
+                ui::ButtonKind::ThicknessBar {
+                    selected_index,
+                } => {
+                    push_thickness_bar(
+                        &mut vertices,
+                        &mut entries,
+                        b.rect,
+                        selected_index,
+                        self.boosted(self.pen_color),
+                    );
                 }
                 ui::ButtonKind::Tool(tool) => {
-                    let color = if b.selected { self.boosted(self.pen_color) } else { [0.6, 0.6, 0.6, 1.0] };
+                    let color = if b.selected {
+                        self.boosted(self.pen_color)
+                    } else {
+                        [
+                            0.6, 0.6, 0.6, 1.0,
+                        ]
+                    };
                     push_tool_icon(&mut vertices, &mut entries, tool, b.rect, color);
                 }
             }
         }
 
-        let vertex_buf = self.core.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ui_cache_vertex_buf"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let vertex_buf = self
+            .core
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ui_cache_vertex_buf"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        self.ui_cache = Some(UiCache { vertex_buf, entries });
+        self.ui_cache = Some(UiCache {
+            vertex_buf,
+            entries,
+        });
         self.ui_dirty = false;
     }
 }
@@ -78,18 +117,51 @@ impl App {
 // (cursor.rs의 draw_* 계열과 형태 로직은 겹치는 부분도 있지만, "버퍼에
 // 쌓는다" vs "매 프레임 즉석 draw한다"는 의도적으로 분리된 별개 경로.)
 
-fn push_quad(vertices: &mut Vec<Vertex>, entries: &mut Vec<UiDrawEntry>, rect: ui::Rect, color: [f32; 4]) {
+fn push_quad(
+    vertices: &mut Vec<Vertex>,
+    entries: &mut Vec<UiDrawEntry>,
+    rect: ui::Rect,
+    color: [f32; 4],
+) {
     let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
     let start = vertices.len() as u32;
     vertices.extend_from_slice(&[
-        Vertex { pos: [x0, y0] },
-        Vertex { pos: [x1, y0] },
-        Vertex { pos: [x0, y1] },
-        Vertex { pos: [x1, y0] },
-        Vertex { pos: [x1, y1] },
-        Vertex { pos: [x0, y1] },
+        Vertex {
+            pos: [
+                x0, y0,
+            ],
+        },
+        Vertex {
+            pos: [
+                x1, y0,
+            ],
+        },
+        Vertex {
+            pos: [
+                x0, y1,
+            ],
+        },
+        Vertex {
+            pos: [
+                x1, y0,
+            ],
+        },
+        Vertex {
+            pos: [
+                x1, y1,
+            ],
+        },
+        Vertex {
+            pos: [
+                x0, y1,
+            ],
+        },
     ]);
-    entries.push(UiDrawEntry { start, count: 6, color });
+    entries.push(UiDrawEntry {
+        start,
+        count: 6,
+        color,
+    });
 }
 
 fn push_line_segment(
@@ -100,24 +172,64 @@ fn push_line_segment(
     width: f32,
     color: [f32; 4],
 ) {
-    let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+    let dir = [
+        p1[0] - p0[0],
+        p1[1] - p0[1],
+    ];
     let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
     if len < f32::EPSILON {
         return;
     }
-    let normal = [-dir[1] / len, dir[0] / len];
+    let normal = [
+        -dir[1] / len,
+        dir[0] / len,
+    ];
     let hw = width * 0.5;
 
     let start = vertices.len() as u32;
     vertices.extend_from_slice(&[
-        Vertex { pos: [p0[0] + normal[0] * hw, p0[1] + normal[1] * hw] },
-        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
-        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
-        Vertex { pos: [p0[0] - normal[0] * hw, p0[1] - normal[1] * hw] },
-        Vertex { pos: [p1[0] - normal[0] * hw, p1[1] - normal[1] * hw] },
-        Vertex { pos: [p1[0] + normal[0] * hw, p1[1] + normal[1] * hw] },
+        Vertex {
+            pos: [
+                p0[0] + normal[0] * hw,
+                p0[1] + normal[1] * hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                p0[0] - normal[0] * hw,
+                p0[1] - normal[1] * hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                p1[0] + normal[0] * hw,
+                p1[1] + normal[1] * hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                p0[0] - normal[0] * hw,
+                p0[1] - normal[1] * hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                p1[0] - normal[0] * hw,
+                p1[1] - normal[1] * hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                p1[0] + normal[0] * hw,
+                p1[1] + normal[1] * hw,
+            ],
+        },
     ]);
-    entries.push(UiDrawEntry { start, count: 6, color });
+    entries.push(UiDrawEntry {
+        start,
+        count: 6,
+        color,
+    });
 }
 
 fn push_triangle_inverted(
@@ -130,11 +242,30 @@ fn push_triangle_inverted(
     let hw = size * 0.73;
     let start = vertices.len() as u32;
     vertices.extend_from_slice(&[
-        Vertex { pos: [center[0] - hw, center[1] - hw] },
-        Vertex { pos: [center[0] + hw, center[1] - hw] },
-        Vertex { pos: [center[0], center[1] + hw] },
+        Vertex {
+            pos: [
+                center[0] - hw,
+                center[1] - hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                center[0] + hw,
+                center[1] - hw,
+            ],
+        },
+        Vertex {
+            pos: [
+                center[0],
+                center[1] + hw,
+            ],
+        },
     ]);
-    entries.push(UiDrawEntry { start, count: 3, color });
+    entries.push(UiDrawEntry {
+        start,
+        count: 3,
+        color,
+    });
 }
 
 fn push_tool_icon(
@@ -155,7 +286,10 @@ fn push_tool_icon(
                 let angle = std::f32::consts::FRAC_PI_4;
                 let rx = x * angle.cos() - y * angle.sin();
                 let ry = x * angle.sin() + y * angle.cos();
-                [cx + rx, cy + ry]
+                [
+                    cx + rx,
+                    cy + ry,
+                ]
             };
 
             let pw = s * 0.4;
@@ -180,20 +314,44 @@ fn push_tool_icon(
             let eh_top = s * 0.6;
             let eh_bot = s * 0.3;
 
-            let tl = [cx - ew, cy - eh_top];
-            let tr = [cx + ew, cy - eh_top];
-            let bl = [cx - ew, cy + eh_bot - eh_bot * 0.5];
-            let br = [cx + ew, cy + eh_bot - eh_bot * 0.5];
+            let tl = [
+                cx - ew,
+                cy - eh_top,
+            ];
+            let tr = [
+                cx + ew,
+                cy - eh_top,
+            ];
+            let bl = [
+                cx - ew,
+                cy + eh_bot - eh_bot * 0.5,
+            ];
+            let br = [
+                cx + ew,
+                cy + eh_bot - eh_bot * 0.5,
+            ];
 
             push_line_segment(vertices, entries, tl, tr, w, color);
             push_line_segment(vertices, entries, tl, bl, w, color);
             push_line_segment(vertices, entries, tr, br, w, color);
 
             let wrap_w = ew * 1.1;
-            let wrap_tl = [cx - wrap_w, cy + eh_bot - eh_bot * 0.5];
-            let wrap_tr = [cx + wrap_w, cy + eh_bot - eh_bot * 0.5];
-            let wrap_bl = [cx - wrap_w, cy + eh_bot * 1.2];
-            let wrap_br = [cx + wrap_w, cy + eh_bot * 1.2];
+            let wrap_tl = [
+                cx - wrap_w,
+                cy + eh_bot - eh_bot * 0.5,
+            ];
+            let wrap_tr = [
+                cx + wrap_w,
+                cy + eh_bot - eh_bot * 0.5,
+            ];
+            let wrap_bl = [
+                cx - wrap_w,
+                cy + eh_bot * 1.2,
+            ];
+            let wrap_br = [
+                cx + wrap_w,
+                cy + eh_bot * 1.2,
+            ];
 
             push_line_segment(vertices, entries, wrap_tl, wrap_tr, w, color);
             push_line_segment(vertices, entries, wrap_bl, wrap_br, w, color);
@@ -201,10 +359,22 @@ fn push_tool_icon(
             push_line_segment(vertices, entries, wrap_tr, wrap_br, w, color);
         }
         Tool::Select => {
-            let p0 = [cx - s * 0.4, cy - s * 0.7];
-            let p1 = [cx + s * 0.6, cy + s * 0.4];
-            let p2 = [cx, cy + s * 0.2];
-            let p3 = [cx - s * 0.4, cy + s * 0.8];
+            let p0 = [
+                cx - s * 0.4,
+                cy - s * 0.7,
+            ];
+            let p1 = [
+                cx + s * 0.6,
+                cy + s * 0.4,
+            ];
+            let p2 = [
+                cx,
+                cy + s * 0.2,
+            ];
+            let p3 = [
+                cx - s * 0.4,
+                cy + s * 0.8,
+            ];
             push_line_segment(vertices, entries, p0, p1, w, color);
             push_line_segment(vertices, entries, p1, p2, w, color);
             push_line_segment(vertices, entries, p2, p3, w, color);
@@ -234,7 +404,11 @@ fn push_thickness_bar(
             min_r + t * (max_r - min_r)
         } else {
             let dx = x - cx;
-            if dx >= max_r { 0.0 } else { (max_r * max_r - dx * dx).sqrt() }
+            if dx >= max_r {
+                0.0
+            } else {
+                (max_r * max_r - dx * dx).sqrt()
+            }
         }
     };
 
@@ -248,22 +422,71 @@ fn push_thickness_bar(
         let x_b = start_x + ((i + 1) as f32 / slices as f32) * step;
         let ra = get_r(x_a);
         let rb = get_r(x_b);
-        vertices.push(Vertex { pos: [x_a, cy - ra] });
-        vertices.push(Vertex { pos: [x_b, cy - rb] });
-        vertices.push(Vertex { pos: [x_b, cy + rb] });
-        vertices.push(Vertex { pos: [x_a, cy - ra] });
-        vertices.push(Vertex { pos: [x_b, cy + rb] });
-        vertices.push(Vertex { pos: [x_a, cy + ra] });
+        vertices.push(Vertex {
+            pos: [
+                x_a,
+                cy - ra,
+            ],
+        });
+        vertices.push(Vertex {
+            pos: [
+                x_b,
+                cy - rb,
+            ],
+        });
+        vertices.push(Vertex {
+            pos: [
+                x_b,
+                cy + rb,
+            ],
+        });
+        vertices.push(Vertex {
+            pos: [
+                x_a,
+                cy - ra,
+            ],
+        });
+        vertices.push(Vertex {
+            pos: [
+                x_b,
+                cy + rb,
+            ],
+        });
+        vertices.push(Vertex {
+            pos: [
+                x_a,
+                cy + ra,
+            ],
+        });
     }
     let count = vertices.len() as u32 - start;
     if count > 0 {
-        entries.push(UiDrawEntry { start, count, color: fill_color });
+        entries.push(UiDrawEntry {
+            start,
+            count,
+            color: fill_color,
+        });
     }
 
-    let outline_color = [0.1, 0.1, 0.1, 1.0];
+    let outline_color = [
+        0.1, 0.1, 0.1, 1.0,
+    ];
     let outline_w = 1.0;
 
-    push_line_segment(vertices, entries, [x0, cy - min_r], [x0, cy + min_r], outline_w, outline_color);
+    push_line_segment(
+        vertices,
+        entries,
+        [
+            x0,
+            cy - min_r,
+        ],
+        [
+            x0,
+            cy + min_r,
+        ],
+        outline_w,
+        outline_color,
+    );
 
     let total_slices = 40;
     for i in 0..total_slices {
@@ -271,13 +494,52 @@ fn push_thickness_bar(
         let x_b = x0 + ((i + 1) as f32 / total_slices as f32) * total_w;
         let ra = get_r(x_a);
         let rb = get_r(x_b);
-        push_line_segment(vertices, entries, [x_a, cy - ra], [x_b, cy - rb], outline_w, outline_color);
-        push_line_segment(vertices, entries, [x_a, cy + ra], [x_b, cy + rb], outline_w, outline_color);
+        push_line_segment(
+            vertices,
+            entries,
+            [
+                x_a,
+                cy - ra,
+            ],
+            [
+                x_b,
+                cy - rb,
+            ],
+            outline_w,
+            outline_color,
+        );
+        push_line_segment(
+            vertices,
+            entries,
+            [
+                x_a,
+                cy + ra,
+            ],
+            [
+                x_b,
+                cy + rb,
+            ],
+            outline_w,
+            outline_color,
+        );
     }
 
     for i in 1..5 {
         let lx = x0 + i as f32 * step;
         let r = get_r(lx);
-        push_line_segment(vertices, entries, [lx, cy - r], [lx, cy + r], outline_w, outline_color);
+        push_line_segment(
+            vertices,
+            entries,
+            [
+                lx,
+                cy - r,
+            ],
+            [
+                lx,
+                cy + r,
+            ],
+            outline_w,
+            outline_color,
+        );
     }
 }

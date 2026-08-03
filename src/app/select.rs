@@ -8,7 +8,9 @@
 
 use super::App;
 use crate::input::PointerEvent;
-use crate::scene::{CanvasItem, DeleteItems, ItemId, MoveItems, ResizeImage, Shape, TransformShape};
+use crate::scene::{
+    CanvasItem, DeleteItems, ItemId, MoveItems, ResizeImage, Shape, TransformShape,
+};
 
 /// 클릭 판정 허용 오차(스크린 px, zoom으로 world 환산). 지우개보다
 /// 살짝 타이트하게 잡음 — 얇은 직선을 정확히 집어야 하니까.
@@ -20,15 +22,29 @@ pub(super) const HANDLE_SIZE_SCREEN_PX: f32 = 8.0;
 pub(super) const ROTATE_HANDLE_DISTANCE_SCREEN_PX: f32 = 28.0;
 
 pub(super) enum SelectDrag {
-    Move { id: ItemId, last_world: [f64; 2], total_delta: [f64; 2] },
+    Move {
+        id: ItemId,
+        last_world: [f64; 2],
+        total_delta: [f64; 2],
+    },
     /// center-anchored 리사이즈 — center/rotation은 안 건드리고
     /// half_extent만 바뀜(코너 어느 걸 잡았는지는 안 따짐, local 좌표
     /// 절대값으로 자동 처리됨).
-    ResizeShape { id: ItemId, before: ([f64; 2], [f64; 2], f32) },
+    ResizeShape {
+        id: ItemId,
+        before: ([f64; 2], [f64; 2], f32),
+    },
     /// Image는 center 개념이 없어서(top_left+size만 있음) 드래그 시작
     /// 시점 중심을 anchor로 캐싱해둬야 함.
-    ResizeImage { id: ItemId, anchor_center: [f64; 2], before: ([f64; 2], [f64; 2]) },
-    RotateShape { id: ItemId, before: ([f64; 2], [f64; 2], f32) },
+    ResizeImage {
+        id: ItemId,
+        anchor_center: [f64; 2],
+        before: ([f64; 2], [f64; 2]),
+    },
+    RotateShape {
+        id: ItemId,
+        before: ([f64; 2], [f64; 2], f32),
+    },
 }
 
 impl App {
@@ -44,11 +60,17 @@ impl App {
     /// 선택된 아이템 삭제(Del 키 전용 경로). 지우개 히트테스트를 안 거치므로
     /// 타입 상관없이 지워짐 — 지우개로 막아둔 이미지도 이 경로로는 삭제 가능.
     pub(super) fn delete_selected_item(&mut self) {
-        let Some(id) = self.selected_item.take() else { return };
-        let Some(item) = self.scene.item(id).cloned() else { return };
+        let Some(id) = self.selected_item.take() else {
+            return;
+        };
+        let Some(item) = self.scene.item(id).cloned() else {
+            return;
+        };
         let z = self.scene.z_index_of(id).unwrap_or(0);
         self.scene.remove(id);
-        let cmd = Box::new(DeleteItems { removed: vec![(id, item, z)] });
+        let cmd = Box::new(DeleteItems {
+            removed: vec![(id, item, z)],
+        });
         self.undo_stack.push_already_applied(cmd);
     }
 
@@ -65,7 +87,8 @@ impl App {
                     if let Some(handle_pos) = self.rotate_handle_world(sh) {
                         if dist(handle_pos, world) <= handle_tol {
                             self.select_drag = Some(SelectDrag::RotateShape {
-                                id, before: (sh.center, sh.half_extent, sh.rotation),
+                                id,
+                                before: (sh.center, sh.half_extent, sh.rotation),
                             });
                             return;
                         }
@@ -73,24 +96,39 @@ impl App {
                     for corner in sh.world_corners() {
                         if dist(corner, world) <= handle_tol {
                             self.select_drag = Some(SelectDrag::ResizeShape {
-                                id, before: (sh.center, sh.half_extent, sh.rotation),
+                                id,
+                                before: (sh.center, sh.half_extent, sh.rotation),
                             });
                             return;
                         }
                     }
                 }
                 if let CanvasItem::Image(img) = item {
-                    let center = [img.top_left[0] + img.size[0] * 0.5, img.top_left[1] + img.size[1] * 0.5];
+                    let center = [
+                        img.top_left[0] + img.size[0] * 0.5,
+                        img.top_left[1] + img.size[1] * 0.5,
+                    ];
                     let corners = [
                         img.top_left,
-                        [img.top_left[0] + img.size[0], img.top_left[1]],
-                        [img.top_left[0] + img.size[0], img.top_left[1] + img.size[1]],
-                        [img.top_left[0], img.top_left[1] + img.size[1]],
+                        [
+                            img.top_left[0] + img.size[0],
+                            img.top_left[1],
+                        ],
+                        [
+                            img.top_left[0] + img.size[0],
+                            img.top_left[1] + img.size[1],
+                        ],
+                        [
+                            img.top_left[0],
+                            img.top_left[1] + img.size[1],
+                        ],
                     ];
                     for corner in corners {
                         if dist(corner, world) <= handle_tol {
                             self.select_drag = Some(SelectDrag::ResizeImage {
-                                id, anchor_center: center, before: (img.top_left, img.size),
+                                id,
+                                anchor_center: center,
+                                before: (img.top_left, img.size),
                             });
                             return;
                         }
@@ -100,14 +138,21 @@ impl App {
         }
 
         // 2) 핸들에 안 맞았으면 몸통 클릭 판정 — 맨 위 아이템부터.
-        let hit = self.scene.iter_ordered_with_id_rev().find_map(|(id, item)| {
-            item.hit_test(world, tol).then_some(id)
-        });
+        let hit = self
+            .scene
+            .iter_ordered_with_id_rev()
+            .find_map(|(id, item)| item.hit_test(world, tol).then_some(id));
 
         match hit {
             Some(id) => {
                 self.selected_item = Some(id);
-                self.select_drag = Some(SelectDrag::Move { id, last_world: world, total_delta: [0.0, 0.0] });
+                self.select_drag = Some(SelectDrag::Move {
+                    id,
+                    last_world: world,
+                    total_delta: [
+                        0.0, 0.0,
+                    ],
+                });
             }
             None => {
                 self.selected_item = None;
@@ -118,11 +163,20 @@ impl App {
 
     fn select_pointer_move(&mut self, screen_pos: [f32; 2]) {
         let world = self.camera.screen_to_world(screen_pos);
-        let Some(drag) = &mut self.select_drag else { return };
+        let Some(drag) = &mut self.select_drag else {
+            return;
+        };
 
         match drag {
-            SelectDrag::Move { id, last_world, total_delta } => {
-                let delta = [world[0] - last_world[0], world[1] - last_world[1]];
+            SelectDrag::Move {
+                id,
+                last_world,
+                total_delta,
+            } => {
+                let delta = [
+                    world[0] - last_world[0],
+                    world[1] - last_world[1],
+                ];
                 if let Some(item) = self.scene.item_mut(*id) {
                     item.translate(delta);
                 }
@@ -130,23 +184,45 @@ impl App {
                 total_delta[1] += delta[1];
                 *last_world = world;
             }
-            SelectDrag::ResizeShape { id, .. } => {
+            SelectDrag::ResizeShape {
+                id,
+                ..
+            } => {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item_mut(*id) {
                     let local = sh.to_local(world);
-                    sh.half_extent = [local[0].abs(), local[1].abs()];
+                    sh.half_extent = [
+                        local[0].abs(),
+                        local[1].abs(),
+                    ];
                     sh.geometry_dirty = true;
                 }
             }
-            SelectDrag::ResizeImage { id, anchor_center, .. } => {
+            SelectDrag::ResizeImage {
+                id,
+                anchor_center,
+                ..
+            } => {
                 if let Some(CanvasItem::Image(img)) = self.scene.item_mut(*id) {
-                    let half = [(world[0] - anchor_center[0]).abs(), (world[1] - anchor_center[1]).abs()];
+                    let half = [
+                        (world[0] - anchor_center[0]).abs(),
+                        (world[1] - anchor_center[1]).abs(),
+                    ];
                     img.set_bounds(
-                        [anchor_center[0] - half[0], anchor_center[1] - half[1]],
-                        [half[0] * 2.0, half[1] * 2.0],
+                        [
+                            anchor_center[0] - half[0],
+                            anchor_center[1] - half[1],
+                        ],
+                        [
+                            half[0] * 2.0,
+                            half[1] * 2.0,
+                        ],
                     );
                 }
             }
-            SelectDrag::RotateShape { id, .. } => {
+            SelectDrag::RotateShape {
+                id,
+                ..
+            } => {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item_mut(*id) {
                     let angle = (world[1] - sh.center[1]).atan2(world[0] - sh.center[0]);
                     sh.rotation = (angle + std::f64::consts::FRAC_PI_2) as f32;
@@ -157,37 +233,72 @@ impl App {
     }
 
     fn select_pointer_up(&mut self) {
-        let Some(drag) = self.select_drag.take() else { return };
+        let Some(drag) = self.select_drag.take() else {
+            return;
+        };
         match drag {
-            SelectDrag::Move { id, total_delta, .. } => {
-                if total_delta != [0.0, 0.0] {
-                    let cmd = Box::new(MoveItems { ids: vec![id], delta: total_delta });
+            SelectDrag::Move {
+                id,
+                total_delta,
+                ..
+            } => {
+                if total_delta
+                    != [
+                        0.0, 0.0,
+                    ]
+                {
+                    let cmd = Box::new(MoveItems {
+                        ids: vec![id],
+                        delta: total_delta,
+                    });
                     self.undo_stack.push_already_applied(cmd);
                 }
             }
-            SelectDrag::ResizeShape { id, before } => {
+            SelectDrag::ResizeShape {
+                id,
+                before,
+            } => {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item(id) {
                     let after = (sh.center, sh.half_extent, sh.rotation);
                     if after != before {
-                        let cmd = Box::new(TransformShape { id, before, after });
+                        let cmd = Box::new(TransformShape {
+                            id,
+                            before,
+                            after,
+                        });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }
             }
-            SelectDrag::ResizeImage { id, before, .. } => {
+            SelectDrag::ResizeImage {
+                id,
+                before,
+                ..
+            } => {
                 if let Some(CanvasItem::Image(img)) = self.scene.item(id) {
                     let after = (img.top_left, img.size);
                     if after != before {
-                        let cmd = Box::new(ResizeImage { id, before, after });
+                        let cmd = Box::new(ResizeImage {
+                            id,
+                            before,
+                            after,
+                        });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }
             }
-            SelectDrag::RotateShape { id, before } => {
+            SelectDrag::RotateShape {
+                id,
+                before,
+            } => {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item(id) {
                     let after = (sh.center, sh.half_extent, sh.rotation);
                     if after != before {
-                        let cmd = Box::new(TransformShape { id, before, after });
+                        let cmd = Box::new(TransformShape {
+                            id,
+                            before,
+                            after,
+                        });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }
@@ -200,7 +311,10 @@ impl App {
     pub(super) fn rotate_handle_world(&self, sh: &Shape) -> Option<[f64; 2]> {
         let d = (ROTATE_HANDLE_DISTANCE_SCREEN_PX / self.camera.zoom) as f64;
         let angle = sh.rotation as f64 - std::f64::consts::FRAC_PI_2;
-        Some([sh.center[0] + d * angle.cos(), sh.center[1] + d * angle.sin()])
+        Some([
+            sh.center[0] + d * angle.cos(),
+            sh.center[1] + d * angle.sin(),
+        ])
     }
 }
 

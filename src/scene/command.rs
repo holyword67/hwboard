@@ -55,7 +55,10 @@ impl Command for MoveItems {
         }
     }
     fn undo(&self, scene: &mut Scene) {
-        let neg = [-self.delta[0], -self.delta[1]];
+        let neg = [
+            -self.delta[0],
+            -self.delta[1],
+        ];
         for &id in &self.ids {
             if let Some(item) = scene.item_mut(id) {
                 item.translate(neg);

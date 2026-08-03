@@ -111,7 +111,9 @@ impl App {
             registry: GpuResourceRegistry::new(),
             scene: Scene::new(),
             undo_stack: UndoStack::new(),
-            camera: Camera::new([w as f32, h as f32]),
+            camera: Camera::new([
+                w as f32, h as f32,
+            ]),
             input: InputState::new(),
             tool: Tool::Pen,
             pen_color: ui::PALETTE[0],
@@ -131,7 +133,10 @@ impl App {
             pointer_captured_by_ui: false,
             is_fullscreen: false,
             open: true,
-            panning: false, last_pan_pos: [0.0, 0.0],
+            panning: false,
+            last_pan_pos: [
+                0.0, 0.0,
+            ],
             snap_state: None,
             msaa_texture_view,
             dirty: true,
@@ -170,35 +175,66 @@ impl App {
         self.dirty = true;
 
         match event {
-            Event::Quit { .. } => self.open = false,
+            Event::Quit {
+                ..
+            } => self.open = false,
             Event::Window {
-                win_event: sdl3::event::WindowEvent::PixelSizeChanged(w, h)
+                win_event:
+                    sdl3::event::WindowEvent::PixelSizeChanged(w, h)
                     | sdl3::event::WindowEvent::Resized(w, h),
                 ..
             } => {
                 self.core.resize(*w as u32, *h as u32);
-                self.camera.resize([*w as f32, *h as f32]);
-                self.msaa_texture_view = create_msaa_texture_view(&self.core.device, &self.core.config);
+                self.camera.resize([
+                    *w as f32, *h as f32,
+                ]);
+                self.msaa_texture_view =
+                    create_msaa_texture_view(&self.core.device, &self.core.config);
                 self.ui_dirty = true; // 도구함 레이아웃이 뷰포트 크기에 의존함
             }
-            Event::Window { win_event: sdl3::event::WindowEvent::FocusGained, .. } => {
+            Event::Window {
+                win_event: sdl3::event::WindowEvent::FocusGained,
+                ..
+            } => {
                 self.has_focus = true;
             }
-            Event::Window { win_event: sdl3::event::WindowEvent::FocusLost, .. } => {
+            Event::Window {
+                win_event: sdl3::event::WindowEvent::FocusLost,
+                ..
+            } => {
                 self.has_focus = false;
             }
-            Event::Window { win_event: sdl3::event::WindowEvent::MouseEnter, .. } => {
+            Event::Window {
+                win_event: sdl3::event::WindowEvent::MouseEnter,
+                ..
+            } => {
                 self.mouse.show_cursor(false); // 보드 안으로 진입 — OS 커서 숨기고 커스텀 커서로 대체
             }
-            Event::Window { win_event: sdl3::event::WindowEvent::MouseLeave, .. } => {
+            Event::Window {
+                win_event: sdl3::event::WindowEvent::MouseLeave,
+                ..
+            } => {
                 self.mouse.show_cursor(true); // 보드 밖으로 이탈 — OS 커서 원복
             }
-            Event::KeyDown { keycode: Some(kc), keymod, repeat: false, .. } => {
-                self.handle_key(*kc, *keymod, window)
-            }
-            Event::MouseWheel { y, mouse_x, mouse_y, .. } => {
+            Event::KeyDown {
+                keycode: Some(kc),
+                keymod,
+                repeat: false,
+                ..
+            } => self.handle_key(*kc, *keymod, window),
+            Event::MouseWheel {
+                y,
+                mouse_x,
+                mouse_y,
+                ..
+            } => {
                 let factor = 1.0 + y * 0.1;
-                self.camera.zoom_at([*mouse_x, *mouse_y], factor);
+                self.camera.zoom_at(
+                    [
+                        *mouse_x, *mouse_y,
+                    ],
+                    factor,
+                );
             }
             _ => {
                 if let Some(input_event) = self.input.process_event(event) {
@@ -221,22 +257,58 @@ impl App {
             Keycode::V if ctrl => self.paste_image_from_clipboard(),
 
             // 도구 선택: A=펜, S=지우개, D=선택기
-            Keycode::A => { self.set_tool(Tool::Pen); self.ui_dirty = true; }
-            Keycode::S => { self.set_tool(Tool::Eraser); self.ui_dirty = true; }
-            Keycode::D => { self.set_tool(Tool::Select); self.ui_dirty = true; }
+            Keycode::A => {
+                self.set_tool(Tool::Pen);
+                self.ui_dirty = true;
+            }
+            Keycode::S => {
+                self.set_tool(Tool::Eraser);
+                self.ui_dirty = true;
+            }
+            Keycode::D => {
+                self.set_tool(Tool::Select);
+                self.ui_dirty = true;
+            }
 
             // 컬러 팔레트: Q,W,E,R = ui::PALETTE[0..4] 순서 그대로
-            Keycode::Q => { self.pen_color = ui::PALETTE[0]; self.ui_dirty = true; }
-            Keycode::W => { self.pen_color = ui::PALETTE[1]; self.ui_dirty = true; }
-            Keycode::E => { self.pen_color = ui::PALETTE[2]; self.ui_dirty = true; }
-            Keycode::R => { self.pen_color = ui::PALETTE[3]; self.ui_dirty = true; }
+            Keycode::Q => {
+                self.pen_color = ui::PALETTE[0];
+                self.ui_dirty = true;
+            }
+            Keycode::W => {
+                self.pen_color = ui::PALETTE[1];
+                self.ui_dirty = true;
+            }
+            Keycode::E => {
+                self.pen_color = ui::PALETTE[2];
+                self.ui_dirty = true;
+            }
+            Keycode::R => {
+                self.pen_color = ui::PALETTE[3];
+                self.ui_dirty = true;
+            }
 
             // 두께: 1~5 = ui::THICKNESS_LEVELS[0..5] 순서 그대로
-            Keycode::_1 => { self.pen_width = ui::THICKNESS_LEVELS[0]; self.ui_dirty = true; }
-            Keycode::_2 => { self.pen_width = ui::THICKNESS_LEVELS[1]; self.ui_dirty = true; }
-            Keycode::_3 => { self.pen_width = ui::THICKNESS_LEVELS[2]; self.ui_dirty = true; }
-            Keycode::_4 => { self.pen_width = ui::THICKNESS_LEVELS[3]; self.ui_dirty = true; }
-            Keycode::_5 => { self.pen_width = ui::THICKNESS_LEVELS[4]; self.ui_dirty = true; }
+            Keycode::_1 => {
+                self.pen_width = ui::THICKNESS_LEVELS[0];
+                self.ui_dirty = true;
+            }
+            Keycode::_2 => {
+                self.pen_width = ui::THICKNESS_LEVELS[1];
+                self.ui_dirty = true;
+            }
+            Keycode::_3 => {
+                self.pen_width = ui::THICKNESS_LEVELS[2];
+                self.ui_dirty = true;
+            }
+            Keycode::_4 => {
+                self.pen_width = ui::THICKNESS_LEVELS[3];
+                self.ui_dirty = true;
+            }
+            Keycode::_5 => {
+                self.pen_width = ui::THICKNESS_LEVELS[4];
+                self.ui_dirty = true;
+            }
 
             _ => {}
         }
@@ -252,18 +324,29 @@ impl App {
     fn handle_input_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::Pointer(p) => self.handle_pointer(p),
-            InputEvent::MouseSideButton { button: sdl3::mouse::MouseButton::X1, pressed: true } => {
+            InputEvent::MouseSideButton {
+                button: sdl3::mouse::MouseButton::X1,
+                pressed: true,
+            } => {
                 self.undo_stack.undo(&mut self.scene);
             }
-            InputEvent::MouseSideButton { button: sdl3::mouse::MouseButton::X2, pressed: true } => {
+            InputEvent::MouseSideButton {
+                button: sdl3::mouse::MouseButton::X2,
+                pressed: true,
+            } => {
                 self.undo_stack.redo(&mut self.scene);
             }
-            InputEvent::MouseSideButton { .. } => {}
+            InputEvent::MouseSideButton {
+                ..
+            } => {}
         }
     }
 }
 
-fn create_msaa_texture_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
+fn create_msaa_texture_view(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("msaa_texture"),
         size: wgpu::Extent3d {

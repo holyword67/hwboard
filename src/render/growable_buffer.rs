@@ -40,7 +40,13 @@ impl GrowableBuffer {
             usage,
             mapped_at_creation: false,
         });
-        Self { buf, capacity_elements, elem_size, usage, label }
+        Self {
+            buf,
+            capacity_elements,
+            elem_size,
+            usage,
+            label,
+        }
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {
@@ -65,7 +71,8 @@ impl GrowableBuffer {
             self.realloc(core, needed);
         }
         if !data.is_empty() {
-            core.queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(data));
+            core.queue
+                .write_buffer(&self.buf, 0, bytemuck::cast_slice(data));
         }
     }
 
@@ -75,18 +82,28 @@ impl GrowableBuffer {
     /// 전체를 다시 올림(부분 이어붙이기가 의미 없어지므로).
     /// 반환값 = 이번 호출 후 "GPU에 올라간 원소 개수"(다음 호출의
     /// already_synced로 그대로 넘기면 됨).
-    pub fn write_suffix<T: Pod>(&mut self, core: &GpuCore, data: &[T], already_synced: usize) -> usize {
+    pub fn write_suffix<T: Pod>(
+        &mut self,
+        core: &GpuCore,
+        data: &[T],
+        already_synced: usize,
+    ) -> usize {
         let needed = data.len() as u64;
         if needed > self.capacity_elements {
             self.realloc(core, needed);
             if !data.is_empty() {
-                core.queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(data));
+                core.queue
+                    .write_buffer(&self.buf, 0, bytemuck::cast_slice(data));
             }
             return data.len();
         }
         if data.len() > already_synced {
             let offset = already_synced as u64 * self.elem_size;
-            core.queue.write_buffer(&self.buf, offset, bytemuck::cast_slice(&data[already_synced..]));
+            core.queue.write_buffer(
+                &self.buf,
+                offset,
+                bytemuck::cast_slice(&data[already_synced..]),
+            );
         }
         data.len()
     }
@@ -102,16 +119,23 @@ pub struct GrowableMesh {
 }
 
 impl GrowableMesh {
-    pub fn new(core: &GpuCore, initial_vertices: u64, initial_indices: u64, label: &'static str) -> Self {
+    pub fn new(
+        core: &GpuCore,
+        initial_vertices: u64,
+        initial_indices: u64,
+        label: &'static str,
+    ) -> Self {
         Self {
             vertex: GrowableBuffer::new(
-                core, initial_vertices,
+                core,
+                initial_vertices,
                 std::mem::size_of::<crate::render::pipeline::Vertex>() as u64,
                 wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 label,
             ),
             index: GrowableBuffer::new(
-                core, initial_indices,
+                core,
+                initial_indices,
                 std::mem::size_of::<u32>() as u64,
                 wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 label,
@@ -120,7 +144,12 @@ impl GrowableMesh {
         }
     }
 
-    pub fn upload(&mut self, core: &GpuCore, vertices: &[crate::render::pipeline::Vertex], indices: &[u32]) {
+    pub fn upload(
+        &mut self,
+        core: &GpuCore,
+        vertices: &[crate::render::pipeline::Vertex],
+        indices: &[u32],
+    ) {
         self.vertex.write_full(core, vertices);
         self.index.write_full(core, indices);
         self.index_count = indices.len() as u32;

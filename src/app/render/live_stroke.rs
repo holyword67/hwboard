@@ -33,13 +33,15 @@ impl LiveStrokeGpu {
     pub(in crate::app) fn new(core: &GpuCore) -> Self {
         Self {
             vertex: GrowableBuffer::new(
-                core, INITIAL_VERTEX_CAPACITY,
+                core,
+                INITIAL_VERTEX_CAPACITY,
                 std::mem::size_of::<Vertex>() as u64,
                 wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 "live_stroke_vertex_buf",
             ),
             index: GrowableBuffer::new(
-                core, INITIAL_INDEX_CAPACITY,
+                core,
+                INITIAL_INDEX_CAPACITY,
                 std::mem::size_of::<u32>() as u64,
                 wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 "live_stroke_index_buf",
@@ -58,8 +60,12 @@ impl LiveStrokeGpu {
 
     /// mesh 중 아직 GPU에 안 올라간 신규분만 write_suffix로 밀어넣음.
     pub(in crate::app) fn sync(&mut self, core: &GpuCore, mesh: &IncrementalStrokeMesh) {
-        self.synced_vertices = self.vertex.write_suffix(core, &mesh.vertices, self.synced_vertices);
-        self.synced_indices = self.index.write_suffix(core, &mesh.indices, self.synced_indices);
+        self.synced_vertices = self
+            .vertex
+            .write_suffix(core, &mesh.vertices, self.synced_vertices);
+        self.synced_indices = self
+            .index
+            .write_suffix(core, &mesh.indices, self.synced_indices);
     }
 
     pub(in crate::app) fn vertex_slice(&self) -> wgpu::BufferSlice<'_> {

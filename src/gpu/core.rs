@@ -83,7 +83,14 @@ impl GpuCore {
             mapped_at_creation: false,
         });
 
-        Self { surface, device, queue, config, global_uniform_buf, color_boost }
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            global_uniform_buf,
+            color_boost,
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -119,6 +126,8 @@ fn compute_color_boost(info: &wgpu::DisplayHdrInfo) -> f32 {
     if info.coarse.and_then(|c| c.high_dynamic_range) == Some(false) {
         return 1.0;
     }
-    let Some(white) = info.luminance.and_then(|l| l.sdr_white_nits) else { return 1.0 };
+    let Some(white) = info.luminance.and_then(|l| l.sdr_white_nits) else {
+        return 1.0;
+    };
     (white / SCRGB_REFERENCE_NITS).max(1.0)
 }

@@ -26,18 +26,26 @@ impl App {
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
         let cursor_world = self.camera.screen_to_world(self.input.last_mouse_pos());
-        let top_left = [cursor_world[0] - w as f64 / 2.0, cursor_world[1] - h as f64 / 2.0];
+        let top_left = [
+            cursor_world[0] - w as f64 / 2.0,
+            cursor_world[1] - h as f64 / 2.0,
+        ];
 
         let id = self.scene.alloc_id();
         let item = CanvasItem::Image(ImageItem {
             top_left,
-            size: [w as f64, h as f64],
+            size: [
+                w as f64, h as f64,
+            ],
             pixel_width: w,
             pixel_height: h,
             rgba: Arc::from(rgba.into_raw()),
             geometry_dirty: true, // 추가: 생성 직후 GPU 리소스를 만들도록 깃발을 세움
         });
-        let cmd = Box::new(AddItem { id, item });
+        let cmd = Box::new(AddItem {
+            id,
+            item,
+        });
         self.undo_stack.execute(cmd, &mut self.scene);
     }
 }
