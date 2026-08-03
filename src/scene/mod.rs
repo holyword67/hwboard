@@ -1,24 +1,22 @@
 // ============================================================
 // src/scene/mod.rs
 // ============================================================
-mod command;
 mod item;
+mod command;
 
-pub use command::*;
 pub use item::*;
+pub use command::*;
 
+use crate::journal::JournalEvent;
 use std::collections::HashMap;
+use std::sync::mpsc::Sender;
 
 const UNDO_STACK_LIMIT: usize = 100;
 
 pub struct Scene {
     items: HashMap<ItemId, CanvasItem>,
-    order: Vec<ItemId>, // 삽입순서 = Z순서
+    order: Vec<ItemId>,
     next_id: ItemId,
-
-    // 이번 프레임에 실제로 바뀐 아이템만 기록 — GpuResourceRegistry가
-    // 매 프레임 전체 씬을 스캔하는 대신 이 세 버퍼만 drain해서 쓰도록.
-    // 4개 뮤테이션 진입점(item_mut/insert/insert_at/remove)에서만 채워짐.
     touched: Vec<ItemId>,
     inserted: Vec<ItemId>,
     removed: Vec<ItemId>,
@@ -61,17 +59,16 @@ impl Scene {
         self.removed.push(id);
     }
 
+    pub fn iter_ordered(&self) -> impl Iterator<Item = &CanvasItem> {
+        self.order.iter().filter_map(|id| self.items.get(id))
+    }
+
     pub fn iter_ordered_with_id(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
-        self.order
-            .iter()
-            .filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
+        self.order.iter().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }
 
     pub fn iter_ordered_with_id_rev(&self) -> impl Iterator<Item = (ItemId, &CanvasItem)> {
-        self.order
-            .iter()
-            .rev()
-            .filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
+        self.order.iter().rev().filter_map(|&id| self.items.get(&id).map(|item| (id, item)))
     }
 
     pub fn z_index_of(&self, id: ItemId) -> Option<usize> {
@@ -82,15 +79,11 @@ impl Scene {
         self.items.get(&id)
     }
 
-    /// 선택 도구와 Command apply/undo가 아이템을 직접 변형할 때 씀.
-    /// 호출 = 변경 의도로 간주하고 touched에 기록.
     pub fn item_mut(&mut self, id: ItemId) -> Option<&mut CanvasItem> {
         self.touched.push(id);
         self.items.get_mut(&id)
     }
 
-    /// GpuResourceRegistry::sync()가 프레임마다 호출해서 이번 프레임에
-    /// 바뀐 아이템 id만 꺼내감(비우면서).
     pub fn take_touched(&mut self) -> Vec<ItemId> {
         std::mem::take(&mut self.touched)
     }
@@ -122,21 +115,46 @@ impl Scene {
     }
 }
 
+/// [설계 변경] undo/redo 스택 + "지금까지 실행된 Command들"의 유일한
+/// 진입점(execute/push_already_applied/undo/redo). 저널 전송도 이
+/// 4곳에서만 발생 — 호출부(pointer.rs/select.rs 등)는 저널 존재
+/// 자체를 몰라도 됨.
 pub struct UndoStack {
-    undo: Vec<Box<dyn Command>>,
-    redo: Vec<Box<dyn Command>>,
+    undo: Vec<Command>,
+    redo: Vec<Command>,
+    journal_tx: Option<Sender<JournalEvent>>,
 }
 
 impl UndoStack {
-    pub fn new() -> Self {
-        Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
+    pub fn new(journal_tx: Option<Sender<JournalEvent>>) -> Self {
+        Self { undo: Vec::new(), redo: Vec::new(), journal_tx }
+    }
+
+    /// 재생(replay) 시점엔 journal_tx 없이 만들었다가, 저장 스레드가
+    /// 뜬 뒤 이걸로 물려줌(재생 중엔 다시 저널에 쓰면 안 되니까 순서상
+    /// 이렇게 나눠야 함).
+    pub fn set_journal_tx(&mut self, tx: Sender<JournalEvent>) {
+        self.journal_tx = Some(tx);
+    }
+
+    /// 종료 시퀀스용 — Sender를 꺼내서 여기서 drop시키면 채널이 닫히고,
+    /// 저장 스레드가 큐에 남은 걸 다 비운 뒤 자연 종료함(호출부가 그
+    /// 뒤에 join).
+    pub fn close_journal(&mut self) -> Option<Sender<JournalEvent>> {
+        self.journal_tx.take()
+    }
+
+    /// 채널이 없거나(재생 중) 닫혀있으면(저장 스레드 이미 죽음) 조용히
+    /// 무시 — 저널링은 best-effort, 실패해도 앱 정상 동작엔 영향 없음.
+    fn journal(&self, event: JournalEvent) {
+        if let Some(tx) = &self.journal_tx {
+            let _ = tx.send(event);
         }
     }
 
-    pub fn execute(&mut self, cmd: Box<dyn Command>, scene: &mut Scene) {
+    pub fn execute(&mut self, cmd: Command, scene: &mut Scene) {
         cmd.apply(scene);
+        self.journal(JournalEvent::Do(cmd.clone()));
         self.undo.push(cmd);
         if self.undo.len() > UNDO_STACK_LIMIT {
             self.undo.remove(0);
@@ -144,7 +162,8 @@ impl UndoStack {
         self.redo.clear();
     }
 
-    pub fn push_already_applied(&mut self, cmd: Box<dyn Command>) {
+    pub fn push_already_applied(&mut self, cmd: Command) {
+        self.journal(JournalEvent::Do(cmd.clone()));
         self.undo.push(cmd);
         if self.undo.len() > UNDO_STACK_LIMIT {
             self.undo.remove(0);
@@ -155,6 +174,7 @@ impl UndoStack {
     pub fn undo(&mut self, scene: &mut Scene) {
         if let Some(cmd) = self.undo.pop() {
             cmd.undo(scene);
+            self.journal(JournalEvent::Undo);
             self.redo.push(cmd);
         }
     }
@@ -162,6 +182,7 @@ impl UndoStack {
     pub fn redo(&mut self, scene: &mut Scene) {
         if let Some(cmd) = self.redo.pop() {
             cmd.apply(scene);
+            self.journal(JournalEvent::Redo);
             self.undo.push(cmd);
         }
     }

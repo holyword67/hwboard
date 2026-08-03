@@ -1,22 +1,24 @@
 // ============================================================
 // src/scene/item.rs
 // ============================================================
+use serde::{Deserialize, Serialize};
+
 pub type ItemId = u64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CanvasItem {
     Stroke(Stroke),
     Image(ImageItem),
     Shape(Shape),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PenPoint {
     pub pos: [f64; 2],
     pub pressure: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stroke {
     pub anchor: [f64; 2],
     pub points: Vec<PenPoint>,
@@ -25,14 +27,47 @@ pub struct Stroke {
     pub geometry_dirty: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageItem {
     pub top_left: [f64; 2],
     pub size: [f64; 2],
     pub pixel_width: u32,
     pub pixel_height: u32,
+    // Arc<[u8]>(unsized)는 serde가 기본으로 못 다뤄서 Vec<u8> 왕복으로
+    // 수동 변환. serde_bytes 크레이트 없이 std serde만으로 처리(의존성
+    // 안 늘림) — 이미지 붙여넣기가 잦은 이벤트가 아니라 바이트 하나씩
+    // seq로 인코딩되는 비효율은 감수(가설: 체감 안 될 것).
+    #[serde(serialize_with = "serialize_rgba", deserialize_with = "deserialize_rgba")]
     pub rgba: std::sync::Arc<[u8]>,
     pub geometry_dirty: bool,
+}
+
+fn serialize_rgba<S: serde::Serializer>(data: &std::sync::Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
+    // serialize_bytes()는 postcard 기준 "길이 varint 하나 + 통째로 복사"
+    // 고속 경로(실측 확인: try_extend 한 방). 예전처럼 [u8] 일반 슬라이스로
+    // 넘기면 원소(픽셀 바이트) 하나하나마다 함수 호출이 도는 seq 경로를 탐 —
+    // 큰 이미지일수록 이 차이가 커짐.
+    s.serialize_bytes(data)
+}
+
+fn deserialize_rgba<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::sync::Arc<[u8]>, D::Error> {
+    struct BytesVisitor;
+    impl<'de> serde::de::Visitor<'de> for BytesVisitor {
+        type Value = std::sync::Arc<[u8]>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "byte array")
+        }
+        fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
+            Ok(std::sync::Arc::from(v))
+        }
+        fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+            Ok(std::sync::Arc::from(v))
+        }
+        fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(std::sync::Arc::from(v))
+        }
+    }
+    d.deserialize_bytes(BytesVisitor)
 }
 
 impl ImageItem {
@@ -45,7 +80,7 @@ impl ImageItem {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ShapeKind {
     Circle,
     Line,
@@ -53,7 +88,7 @@ pub enum ShapeKind {
     Triangle,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shape {
     pub kind: ShapeKind,
     pub center: [f64; 2],
@@ -69,115 +104,46 @@ impl Shape {
         let (hx, hy) = (self.half_extent[0], self.half_extent[1]);
         match self.kind {
             ShapeKind::Rectangle => vec![
-                [
-                    -hx, -hy,
-                ],
-                [
-                    hx, -hy,
-                ],
-                [
-                    hx, hy,
-                ],
-                [
-                    -hx, hy,
-                ],
-                [
-                    -hx, -hy,
-                ],
+                [-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy],
             ],
             ShapeKind::Circle => {
                 const SEGMENTS: usize = 64;
                 (0..=SEGMENTS)
                     .map(|i| {
                         let theta = (i as f64 / SEGMENTS as f64) * std::f64::consts::TAU;
-                        [
-                            hx * theta.cos(),
-                            hy * theta.sin(),
-                        ]
+                        [hx * theta.cos(), hy * theta.sin()]
                     })
                     .collect()
             }
-            ShapeKind::Line => vec![
-                [
-                    -hx, 0.0,
-                ],
-                [
-                    hx, 0.0,
-                ],
-            ],
+            ShapeKind::Line => vec![[-hx, 0.0], [hx, 0.0]],
             ShapeKind::Triangle => vec![
-                [
-                    0.0, -hy,
-                ],
-                [
-                    hx, hy,
-                ],
-                [
-                    -hx, hy,
-                ],
-                [
-                    0.0, -hy,
-                ],
+                [0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy],
             ],
         }
     }
 
-    /// rotation만 반영하고 center는 안 더한 로컬 outline. as_stroke()가
-    /// 여길 쓰면 "이동"은 anchor(=center) 갱신만으로 끝나고, "회전/
-    /// 리사이즈"일 때만 재계산됨 — Stroke의 anchor/points 분리와 동일 원칙.
     fn rotated_local_outline(&self) -> Vec<[f64; 2]> {
         let sin_r = (self.rotation as f64).sin();
         let cos_r = (self.rotation as f64).cos();
         self.local_outline()
             .into_iter()
-            .map(
-                |[
-                    lx,
-                    ly,
-                ]| {
-                    [
-                        lx * cos_r - ly * sin_r,
-                        lx * sin_r + ly * cos_r,
-                    ]
-                },
-            )
+            .map(|[lx, ly]| [lx * cos_r - ly * sin_r, lx * sin_r + ly * cos_r])
             .collect()
     }
 
     fn local_corners(&self) -> [[f64; 2]; 4] {
         let (hx, hy) = (self.half_extent[0], self.half_extent[1]);
-        [
-            [
-                -hx, -hy,
-            ],
-            [
-                hx, -hy,
-            ],
-            [
-                hx, hy,
-            ],
-            [
-                -hx, hy,
-            ],
-        ]
+        [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]]
     }
 
     pub fn world_corners(&self) -> [[f64; 2]; 4] {
         let sin_r = (self.rotation as f64).sin();
         let cos_r = (self.rotation as f64).cos();
-        self.local_corners().map(
-            |[
-                lx,
-                ly,
-            ]| {
-                let rx = lx * cos_r - ly * sin_r;
-                let ry = lx * sin_r + ly * cos_r;
-                [
-                    self.center[0] + rx,
-                    self.center[1] + ry,
-                ]
-            },
-        )
+        self.local_corners().map(|[lx, ly]| {
+            let rx = lx * cos_r - ly * sin_r;
+            let ry = lx * sin_r + ly * cos_r;
+            [self.center[0] + rx, self.center[1] + ry]
+        })
     }
 
     pub fn to_local(&self, point: [f64; 2]) -> [f64; 2] {
@@ -185,17 +151,11 @@ impl Shape {
         let dy = point[1] - self.center[1];
         let sin_r = (-self.rotation as f64).sin();
         let cos_r = (-self.rotation as f64).cos();
-        [
-            dx * cos_r - dy * sin_r,
-            dx * sin_r + dy * cos_r,
-        ]
+        [dx * cos_r - dy * sin_r, dx * sin_r + dy * cos_r]
     }
 
     fn hit_test_local(&self, point: [f64; 2], pad: f64) -> bool {
-        let [
-            lx,
-            ly,
-        ] = self.to_local(point);
+        let [lx, ly] = self.to_local(point);
         match self.kind {
             ShapeKind::Rectangle => {
                 lx.abs() <= self.half_extent[0] + pad && ly.abs() <= self.half_extent[1] + pad
@@ -203,56 +163,31 @@ impl Shape {
             ShapeKind::Circle => {
                 let rx = self.half_extent[0] + pad;
                 let ry = self.half_extent[1] + pad;
-                if rx <= 0.0 || ry <= 0.0 {
-                    return false;
-                }
+                if rx <= 0.0 || ry <= 0.0 { return false; }
                 (lx / rx).powi(2) + (ly / ry).powi(2) <= 1.0
             }
             ShapeKind::Line => {
                 let r = pad + (self.stroke_width as f64 * 0.5);
-                segment_dist_sq(
-                    [
-                        -self.half_extent[0],
-                        0.0,
-                    ],
-                    [
-                        self.half_extent[0],
-                        0.0,
-                    ],
-                    [
-                        lx, ly,
-                    ],
-                ) <= r * r
+                segment_dist_sq([-self.half_extent[0], 0.0], [self.half_extent[0], 0.0], [lx, ly]) <= r * r
             }
             ShapeKind::Triangle => {
                 if ly < -self.half_extent[1] - pad || ly > self.half_extent[1] + pad {
                     return false;
                 }
-                let progress = (ly + self.half_extent[1] + pad)
-                    / (2.0 * self.half_extent[1] + 2.0 * pad).max(f64::EPSILON);
+                let progress = (ly + self.half_extent[1] + pad) / (2.0 * self.half_extent[1] + 2.0 * pad).max(f64::EPSILON);
                 let allowed_x = self.half_extent[0] * progress + pad;
                 lx.abs() <= allowed_x
             }
         }
     }
 
-    /// [변경] world_outline() 제거 — anchor(=center) + 로컬 outline으로
-    /// 분리. 호출부(GpuResourceRegistry)가 anchor는 origin으로,
-    /// points는 그대로 테셀레이션 입력으로 씀.
     pub fn as_stroke(&self) -> Stroke {
         Stroke {
             anchor: self.center,
-            points: self
-                .rotated_local_outline()
-                .into_iter()
-                .map(|pos| PenPoint {
-                    pos,
-                    pressure: 1.0,
-                })
-                .collect(),
+            points: self.rotated_local_outline().into_iter().map(|pos| PenPoint { pos, pressure: 1.0 }).collect(),
             color: self.color,
             base_width: self.stroke_width,
-            geometry_dirty: true, // 이 Stroke는 즉시 소모되는 임시 객체라 의미 없음
+            geometry_dirty: true,
         }
     }
 }
@@ -261,23 +196,11 @@ impl CanvasItem {
     pub fn bounding_box(&self) -> ([f64; 2], [f64; 2]) {
         match self {
             CanvasItem::Stroke(s) => stroke_bbox(s),
-            CanvasItem::Image(img) => (
-                img.top_left,
-                [
-                    img.top_left[0] + img.size[0],
-                    img.top_left[1] + img.size[1],
-                ],
-            ),
+            CanvasItem::Image(img) => (img.top_left, [img.top_left[0] + img.size[0], img.top_left[1] + img.size[1]]),
             CanvasItem::Shape(sh) => {
                 let corners = sh.world_corners();
-                let mut min = [
-                    f64::MAX,
-                    f64::MAX,
-                ];
-                let mut max = [
-                    f64::MIN,
-                    f64::MIN,
-                ];
+                let mut min = [f64::MAX, f64::MAX];
+                let mut max = [f64::MIN, f64::MIN];
                 for c in corners {
                     min[0] = min[0].min(c[0]);
                     min[1] = min[1].min(c[1]);
@@ -291,25 +214,16 @@ impl CanvasItem {
 
     pub fn hit_test(&self, point: [f64; 2], radius: f64) -> bool {
         let (min, max) = self.bounding_box();
-        if point[0] < min[0] - radius
-            || point[0] > max[0] + radius
-            || point[1] < min[1] - radius
-            || point[1] > max[1] + radius
-        {
+        if point[0] < min[0] - radius || point[0] > max[0] + radius ||
+           point[1] < min[1] - radius || point[1] > max[1] + radius {
             return false;
         }
         match self {
             CanvasItem::Stroke(s) => {
                 let r = radius + (s.base_width as f64 * 0.5);
                 let r_sq = r * r;
-                if s.points.is_empty() {
-                    return false;
-                }
-                // 쿼리 점을 한 번만 로컬로 변환(anchor 뺄셈 1회).
-                let lq = [
-                    point[0] - s.anchor[0],
-                    point[1] - s.anchor[1],
-                ];
+                if s.points.is_empty() { return false; }
+                let lq = [point[0] - s.anchor[0], point[1] - s.anchor[1]];
                 if s.points.len() == 1 {
                     let dx = lq[0] - s.points[0].pos[0];
                     let dy = lq[1] - s.points[0].pos[1];
@@ -329,9 +243,6 @@ impl CanvasItem {
         }
     }
 
-    /// [핵심 불변식] 세 타입 전부 anchor/center/top_left "만" 갱신.
-    /// geometry_dirty는 여기서 절대 세우지 않음 — 이동은 항상 O(1),
-    /// GPU 버퍼 무관.
     pub fn translate(&mut self, delta: [f64; 2]) {
         match self {
             CanvasItem::Stroke(s) => {
@@ -350,32 +261,16 @@ impl CanvasItem {
     }
 }
 
-/// local 좌표 기준으로 min/max 구한 뒤 anchor를 한 번만 더함.
 pub fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
-    let mut min = [
-        f64::MAX,
-        f64::MAX,
-    ];
-    let mut max = [
-        f64::MIN,
-        f64::MIN,
-    ];
+    let mut min = [f64::MAX, f64::MAX];
+    let mut max = [f64::MIN, f64::MIN];
     for p in &s.points {
         min[0] = min[0].min(p.pos[0]);
         min[1] = min[1].min(p.pos[1]);
         max[0] = max[0].max(p.pos[0]);
         max[1] = max[1].max(p.pos[1]);
     }
-    (
-        [
-            min[0] + s.anchor[0],
-            min[1] + s.anchor[1],
-        ],
-        [
-            max[0] + s.anchor[0],
-            max[1] + s.anchor[1],
-        ],
-    )
+    ([min[0] + s.anchor[0], min[1] + s.anchor[1]], [max[0] + s.anchor[0], max[1] + s.anchor[1]])
 }
 
 pub fn segment_dist_sq(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {

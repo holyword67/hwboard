@@ -8,9 +8,7 @@
 
 use super::App;
 use crate::input::PointerEvent;
-use crate::scene::{
-    CanvasItem, DeleteItems, ItemId, MoveItems, ResizeImage, Shape, TransformShape,
-};
+use crate::scene::{CanvasItem, Command, DeleteItems, ItemId, MoveItems, ResizeImage, Shape, TransformShape};
 
 /// 클릭 판정 허용 오차(스크린 px, zoom으로 world 환산). 지우개보다
 /// 살짝 타이트하게 잡음 — 얇은 직선을 정확히 집어야 하니까.
@@ -68,9 +66,7 @@ impl App {
         };
         let z = self.scene.z_index_of(id).unwrap_or(0);
         self.scene.remove(id);
-        let cmd = Box::new(DeleteItems {
-            removed: vec![(id, item, z)],
-        });
+        let cmd = Command::DeleteItems(DeleteItems { removed: vec![(id, item, z)] });
         self.undo_stack.push_already_applied(cmd);
     }
 
@@ -247,10 +243,7 @@ impl App {
                         0.0, 0.0,
                     ]
                 {
-                    let cmd = Box::new(MoveItems {
-                        ids: vec![id],
-                        delta: total_delta,
-                    });
+                    let cmd = Command::MoveItems(MoveItems { ids: vec![id], delta: total_delta });
                     self.undo_stack.push_already_applied(cmd);
                 }
             }
@@ -261,11 +254,7 @@ impl App {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item(id) {
                     let after = (sh.center, sh.half_extent, sh.rotation);
                     if after != before {
-                        let cmd = Box::new(TransformShape {
-                            id,
-                            before,
-                            after,
-                        });
+                        let cmd = Command::TransformShape(TransformShape { id, before, after });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }
@@ -278,11 +267,7 @@ impl App {
                 if let Some(CanvasItem::Image(img)) = self.scene.item(id) {
                     let after = (img.top_left, img.size);
                     if after != before {
-                        let cmd = Box::new(ResizeImage {
-                            id,
-                            before,
-                            after,
-                        });
+                    let cmd = Command::ResizeImage(ResizeImage { id, before, after });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }
@@ -294,11 +279,7 @@ impl App {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item(id) {
                     let after = (sh.center, sh.half_extent, sh.rotation);
                     if after != before {
-                        let cmd = Box::new(TransformShape {
-                            id,
-                            before,
-                            after,
-                        });
+                        let cmd = Command::TransformShape(TransformShape { id, before, after });
                         self.undo_stack.push_already_applied(cmd);
                     }
                 }

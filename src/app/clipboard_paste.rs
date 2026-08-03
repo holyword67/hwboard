@@ -5,7 +5,7 @@
 
 use super::App;
 use crate::clipboard::read_clipboard_image_bytes;
-use crate::scene::{AddItem, CanvasItem, ImageItem};
+use crate::scene::{AddItem, CanvasItem, Command, ImageItem};
 use std::sync::Arc;
 
 impl App {
@@ -42,10 +42,7 @@ impl App {
             rgba: Arc::from(rgba.into_raw()),
             geometry_dirty: true, // 추가: 생성 직후 GPU 리소스를 만들도록 깃발을 세움
         });
-        let cmd = Box::new(AddItem {
-            id,
-            item,
-        });
+        let cmd = Command::AddItem(AddItem { id, item });
         self.undo_stack.execute(cmd, &mut self.scene);
     }
 }

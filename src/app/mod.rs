@@ -14,7 +14,11 @@ use crate::render::gpu_resources::GpuResourceRegistry;
 use crate::render::image_pipeline::ImagePipeline;
 use crate::render::pipeline::StrokePipeline;
 use crate::render::ui_pipeline::UiPipeline;
-use crate::scene::{CanvasItem, ItemId, PenPoint, Scene, Shape, Stroke, UndoStack};
+use crate::journal;
+use crate::scene::{
+    CanvasItem, ClearAll, Command, ItemId, PenPoint, Scene, Shape, Stroke, UndoStack,
+};
+use std::thread::JoinHandle;
 use crate::ui;
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod};
@@ -90,6 +94,8 @@ pub struct App {
     /// 지우개 인디케이터/선택 오버레이/커스텀 커서 전용 growable 버퍼(C) —
     /// live_stroke_gpu와 마찬가지로 세션 내내 재사용, 매 프레임 내용만 갱신.
     overlay_gpu: Option<OverlayGpu>,
+    /// 저장 스레드 핸들 — Quit 시점에 join해서 "정상 종료는 유실 없음"을 보장.
+    journal_thread: Option<JoinHandle<()>>,
     mouse: MouseUtil,
 }
 
@@ -103,17 +109,20 @@ impl App {
         let (w, h) = window.size();
         let mouse = sdl_context.mouse();
         mouse.show_cursor(false); // 보드는 창 전체 — 시작 시점부터 OS 커서 숨김(커스텀 커서로 대체)
+        let journal_path = journal::journal_path();
+        let (scene, mut undo_stack) = journal::replay(&journal_path);
+        let (journal_tx, journal_thread) = journal::spawn(journal_path);
+        undo_stack.set_journal_tx(journal_tx);
+
         Self {
             core,
             pipeline,
             ui_pipeline,
             image_pipeline,
             registry: GpuResourceRegistry::new(),
-            scene: Scene::new(),
-            undo_stack: UndoStack::new(),
-            camera: Camera::new([
-                w as f32, h as f32,
-            ]),
+            scene,
+            undo_stack,
+            camera: Camera::new([w as f32, h as f32]),
             input: InputState::new(),
             tool: Tool::Pen,
             pen_color: ui::PALETTE[0],
@@ -145,6 +154,7 @@ impl App {
             ui_cache: None,
             live_stroke_gpu: None,
             overlay_gpu: None,
+            journal_thread: Some(journal_thread),
             mouse,
         }
     }
@@ -175,9 +185,16 @@ impl App {
         self.dirty = true;
 
         match event {
-            Event::Quit {
-                ..
-            } => self.open = false,
+            Event::Quit { .. } => {
+                // Sender drop → 채널 닫힘 → 저장 스레드가 큐에 남은 걸
+                // 다 비우고 자연 종료 → join으로 기다렸다가 진짜 종료.
+                // 이걸로 "정상 종료는 유실 없음"이 보장됨.
+                self.undo_stack.close_journal();
+                if let Some(handle) = self.journal_thread.take() {
+                    let _ = handle.join();
+                }
+                self.open = false;
+            }
             Event::Window {
                 win_event:
                     sdl3::event::WindowEvent::PixelSizeChanged(w, h)
@@ -250,6 +267,7 @@ impl App {
             Keycode::Backspace => self.undo_stack.undo(&mut self.scene),
             Keycode::Equals => self.undo_stack.redo(&mut self.scene),
             Keycode::Delete => self.delete_selected_item(),
+            Keycode::Escape => self.clear_all(),
             Keycode::Return => {
                 self.is_fullscreen = !self.is_fullscreen;
                 let _ = window.set_fullscreen(self.is_fullscreen);
@@ -341,6 +359,19 @@ impl App {
             } => {}
         }
     }
+
+    fn clear_all(&mut self) {
+        if self.scene.iter_ordered_with_id().next().is_none() {
+            return;
+        }
+        let items: Vec<_> = self.scene.iter_ordered_with_id()
+            .enumerate()
+            .map(|(idx, (id, item))| (id, item.clone(), idx))
+            .collect();
+        let cmd = Command::ClearAll(ClearAll { items });
+        self.undo_stack.execute(cmd, &mut self.scene);
+    }
+
 }
 
 fn create_msaa_texture_view(

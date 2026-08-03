@@ -6,10 +6,13 @@ edition = "2024"
 [dependencies]
 rayon = "1.12"
 wgpu = "30.0"
-bytemuck = "1.25"
-pollster = "1.0"
+bytemuck = "1"
+pollster = "1"
 sdl3 = { version = "0.18", features = ["raw-window-handle", "build-from-source-static"] }
 image = "0.25"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+dirs = "6"
 
 [features]
 

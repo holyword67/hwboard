@@ -4,7 +4,7 @@
 use super::{App, Tool};
 use crate::input::{PointerEvent, PointerSource};
 use crate::render::tessellate::estimate_tangent;
-use crate::scene::{AddItem, CanvasItem, DeleteItems, PenPoint, ShapeKind, Stroke};
+use crate::scene::{AddItem, CanvasItem, Command, DeleteItems, PenPoint, ShapeKind, Stroke};
 use crate::ui::{self, UiAction};
 
 pub(super) const ERASER_RADIUS_SCREEN_PX: f32 = 12.0;
@@ -198,10 +198,7 @@ impl App {
                 self.drawing_stroke_last_screen_pos = None;
                 if let Some(shape) = self.drawing_shape_preview.take() {
                     let id = self.scene.alloc_id();
-                    let cmd = Box::new(AddItem {
-                        id,
-                        item: CanvasItem::Shape(shape),
-                    });
+                    let cmd = Command::AddItem(AddItem { id, item: CanvasItem::Shape(shape) });
                     self.undo_stack.execute(cmd, &mut self.scene);
                 } else if let Some(mut stroke) = self.drawing_stroke.take() {
                     // 톡 찍기(드래그 없는 탭) 대응: 점이 1개뿐이면 아주 살짝 옆으로
@@ -232,10 +229,7 @@ impl App {
                         stroke.anchor = anchor;
 
                         let id = self.scene.alloc_id();
-                        let cmd = Box::new(AddItem {
-                            id,
-                            item: CanvasItem::Stroke(stroke),
-                        });
+                        let cmd = Command::AddItem(AddItem { id, item: CanvasItem::Stroke(stroke) });
                         self.undo_stack.execute(cmd, &mut self.scene);
                     }
                 }
@@ -269,9 +263,7 @@ impl App {
             }
             (Tool::Eraser, PointerEvent::Up(_)) => {
                 if !self.erasing_removed.is_empty() {
-                    let cmd = Box::new(DeleteItems {
-                        removed: std::mem::take(&mut self.erasing_removed),
-                    });
+                    let cmd = Command::DeleteItems(DeleteItems { removed: std::mem::take(&mut self.erasing_removed) });
                     self.undo_stack.push_already_applied(cmd);
                 }
             }
