@@ -170,6 +170,22 @@ impl App {
             self.selected_item = None;
             self.select_drag = None;
         }
+        // ==========================================
+        // [수정된 부분] 다른 도구로 변경될 때, 
+        // 그리다 만 스트로크나 도형 프리뷰가 있다면 강제로 폐기합니다.
+        // ==========================================
+        if self.tool != tool {
+            self.drawing_stroke = None;
+            self.drawing_shape_preview = None;
+            self.drawing_mesh_cache = None;
+            self.smoother_prev2 = None;
+            self.smoother_prev1 = None;
+            self.smoother_prev1_pending = false;
+            self.geom_prev_pos = None;
+            self.geom_pending = None;
+            self.snap_state = None;
+        }
+
         self.tool = tool;
     }
 
