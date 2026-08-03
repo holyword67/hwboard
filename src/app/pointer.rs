@@ -70,11 +70,15 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                 self.snap_state = None;
                 self.drawing_shape_preview = None;
                 let world = self.camera.screen_to_world(s.pos);
+                // anchor=[0,0]으로 두고 그리는 동안은 points를 월드좌표
+                // 그대로 씀(로컬=월드, anchor가 원점이라 등가) — Up
+                // 시점에 첫 점을 anchor로 확정하고 나머지를 로컬화함.
                 self.drawing_stroke = Some(Stroke {
+                    anchor: [0.0, 0.0],
                     points: Vec::new(),
                     color: self.pen_color,
                     base_width: self.pen_width,
-                    mesh_dirty: true,
+                    geometry_dirty: true,
                 });
                 self.drawing_mesh_cache = Some(crate::render::tessellate::IncrementalStrokeMesh::new(world));
                 self.drawing_stroke_last_screen_pos = Some(s.pos);
@@ -122,7 +126,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                                 shape.rotation = snap.initial_rotation + delta_angle;
                             }
                         }
-                        shape.mesh_dirty = true;
+                        shape.geometry_dirty = true;
                     }
                     return;
                 }
@@ -164,9 +168,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                     self.undo_stack.execute(cmd, &mut self.scene);
                 } else if let Some(mut stroke) = self.drawing_stroke.take() {
                     // 톡 찍기(드래그 없는 탭) 대응: 점이 1개뿐이면 아주 살짝 옆으로
-                    // 민 점을 하나 추가해서 2점짜리 초단거리 스트로크로 만듦. 시각적
-                    // 결과는 tessellate_stroke의 라운드 캡 두 개가 거의 겹쳐서 동그란
-                    // 점으로 보임(반지름 비례 오프셋이라 줌 레벨과 무관하게 일관됨).
+                    // 민 점을 하나 추가해서 2점짜리 초단거리 스트로크로 만듦.
                     if stroke.points.len() == 1 {
                         let p0 = stroke.points[0].clone();
                         let radius = (stroke.base_width * p0.pressure.max(0.05) * 0.5) as f64;
@@ -174,6 +176,18 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
                         stroke.points.push(PenPoint { pos: [p0.pos[0] + eps, p0.pos[1]], pressure: p0.pressure });
                     }
                     if stroke.points.len() >= 2 {
+                        // [A] anchor 확정 — 첫 점의(지금은 아직 월드=로컬인)
+                        // 좌표를 anchor로 삼고, 모든 점을 그 기준 로컬로
+                        // 변환. 이 이후로 이 스트로크를 옮기는 건
+                        // translate()가 anchor만 바꾸는 것으로 끝남(O(1),
+                        // GPU 재테셀레이션 없음).
+                        let anchor = stroke.points[0].pos;
+                        for p in stroke.points.iter_mut() {
+                            p.pos[0] -= anchor[0];
+                            p.pos[1] -= anchor[1];
+                        }
+                        stroke.anchor = anchor;
+
                         let id = self.scene.alloc_id();
                         let cmd = Box::new(AddItem { id, item: CanvasItem::Stroke(stroke) });
                         self.undo_stack.execute(cmd, &mut self.scene);
@@ -215,8 +229,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// 위치 스무딩 슬라이딩 윈도우(1점 지연) — 직전-직전/직전/지금이
-    /// 다 찼을 때만 "직전" 점의 평활 위치를 확정해서 push.
+    /// 위치 스무딩 슬라이딩 윈도우(1점 지연).
     fn feed_smoother(&mut self, raw: PenPoint) {
         match (self.smoother_prev2, self.smoother_prev1.clone()) {
             (Some(a), Some(b)) => {
@@ -241,8 +254,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         }
     }
 
-    /// 위치 스무딩이 끝난 점을 stroke.points에 즉시 반영(히트테스트/
-    /// 도형인식은 이 시점에 바로 확정) + 지오메트리 지연 단계에 공급.
+    /// 위치 스무딩이 끝난 점을 stroke.points에 즉시 반영 + 지오메트리 지연 단계에 공급.
     fn push_finalized_point(&mut self, point: PenPoint) {
         match &mut self.drawing_stroke {
             Some(stroke) => stroke.points.push(point.clone()),
@@ -251,9 +263,7 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
         self.feed_geometry_stage(point);
     }
 
-    /// 접선 계산용 2단계 지연 — 점이 하나 더 들어와야 직전 점의 접선을
-    /// 중심차분으로 확정할 수 있어서, 실제 리본 지오메트리는
-    /// stroke.points보다 한 점 늦게 반영됨.
+    /// 접선 계산용 2단계 지연.
     fn feed_geometry_stage(&mut self, point: PenPoint) {
         if let Some(pending) = self.geom_pending.take() {
             let tangent = estimate_tangent(self.geom_prev_pos, pending.pos, Some(point.pos));
@@ -281,7 +291,6 @@ pub(super) fn handle_pointer(&mut self, ev: PointerEvent) {
             if self.erasing_removed.iter().any(|(rid, _, _)| *rid == id) {
                 return None;
             }
-            // 이미지는 지우개 대상에서 제외 — Del 키로만 삭제 가능하도록.
             if matches!(item, CanvasItem::Image(_)) {
                 return None;
             }

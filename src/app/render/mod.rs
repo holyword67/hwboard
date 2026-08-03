@@ -3,10 +3,12 @@
 // ============================================================
 mod cursor;
 mod live_stroke;
-mod primitives;
+mod overlay;
 mod ui_cache;
 
 pub(in crate::app) use live_stroke::LiveStrokeGpu;
+pub(in crate::app) use overlay::OverlayGpu;
+use overlay::OverlayBuilder;
 pub(in crate::app) use ui_cache::UiCache;
 
 use super::{App, Tool};
@@ -18,10 +20,7 @@ use wgpu::util::DeviceExt;
 const CURSOR_ICON_SIZE_SCREEN_PX: f32 = 22.0;
 
 impl App {
-    /// HDR 색상 부스트 적용(rgb만, alpha 무변화). Scene에 저장된 색값은
-    /// 항상 SDR 기준(0.0~1.0)으로 유지하고, 실제로 GPU에 넘기는 이
-    /// 시점에만 곱해줌 — Undo/Redo나 나중에 헤드룸 재조회 기능이
-    /// 생겨도 저장 데이터가 오염 안 되도록.
+    /// HDR 색상 부스트 적용(rgb만, alpha 무변화).
     pub(super) fn boosted(&self, c: [f32; 4]) -> [f32; 4] {
         let b = self.core.color_boost;
         [c[0] * b, c[1] * b, c[2] * b, c[3]]
@@ -88,12 +87,16 @@ impl App {
             let mut on_stroke_pipeline = true;
 
             for (id, item) in self.scene.iter_ordered_with_id() {
-                if !self.registry.is_visible(id, view_min, view_max) {
-                    continue;
-                }
+                // [변경] 컬링 체크가 리소스 fetch 뒤로 옮겨짐 — is_visible이
+                // 이제 origin을 인자로 받아서(로컬 bbox 캐시 + 최신 origin
+                // 합산) world bbox를 구하기 때문. res.origin을 이중으로
+                // 들고 다닐 필요가 없어서 오히려 더 단순해짐.
                 match item {
                     CanvasItem::Stroke(s) => {
                         let Some(res) = self.registry.get_stroke(id) else { continue };
+                        if !self.registry.is_visible(id, res.origin, view_min, view_max) {
+                            continue;
+                        }
                         if !on_stroke_pipeline {
                             pass.set_pipeline(&self.pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
@@ -105,12 +108,15 @@ impl App {
                         ];
                         let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted(s.color) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-                        pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
-                        pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..res.index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, res.mesh.vertex.buffer().slice(..));
+                        pass.set_index_buffer(res.mesh.index.buffer().slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..res.mesh.index_count, 0, 0..1);
                     }
                     CanvasItem::Shape(sh) => {
                         let Some(res) = self.registry.get_shape(id) else { continue };
+                        if !self.registry.is_visible(id, res.origin, view_min, view_max) {
+                            continue;
+                        }
                         if !on_stroke_pipeline {
                             pass.set_pipeline(&self.pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
@@ -122,12 +128,15 @@ impl App {
                         ];
                         let immediate = DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted(sh.color) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
-                        pass.set_vertex_buffer(0, res.vertex_buf.slice(..));
-                        pass.set_index_buffer(res.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..res.index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, res.mesh.vertex.buffer().slice(..));
+                        pass.set_index_buffer(res.mesh.index.buffer().slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..res.mesh.index_count, 0, 0..1);
                     }
                     CanvasItem::Image(_) => {
                         let Some(res) = self.registry.get_image(id) else { continue };
+                        if !self.registry.is_visible(id, res.origin, view_min, view_max) {
+                            continue;
+                        }
                         if on_stroke_pipeline {
                             pass.set_pipeline(&self.image_pipeline.pipeline);
                             pass.set_bind_group(0, &self.pipeline.global_bind_group, &[]);
@@ -138,12 +147,6 @@ impl App {
                             (res.origin[0] - self.camera.center[0]) as f32,
                             (res.origin[1] - self.camera.center[1]) as f32,
                         ];
-                        // [정정, 2026.7.31] 이전엔 "색 왜곡 방지" 목적으로
-                        // boosted() 자체를 스킵했는데, 그 판단이 잘못됨 —
-                        // 여기서 곱하는 건 색조 변경이 아니라 scRGB 밝기
-                        // 기준(80nit) 정규화라 사진에도 동일하게 필요함.
-                        // 색조 자체는 (1,1,1)이라 boosted()를 곱해도 RGB
-                        // 비율은 안 바뀌고 밝기만 따라 올라감.
                         let immediate =
                             DrawImmediate { offset, _pad: [0.0; 2], color: self.boosted([1.0, 1.0, 1.0, 1.0]) };
                         pass.set_immediates(0, bytemuck::bytes_of(&immediate));
@@ -215,10 +218,17 @@ impl App {
                 cache.draw(&mut pass);
             }
 
+            // [설계 변경, C] 지우개 인디케이터/선택 오버레이/커서 아이콘을
+            // CPU 빌더에 전부 모았다가 growable 버퍼 하나로 한 번에
+            // 업로드 — 예전엔 선분/사각형 하나당 GPU 버퍼를 새로 만들었음
+            // (지우개 인디케이터만 매 프레임 16번). 각 요소의 색상이
+            // 달라서 draw call 자체는 여전히 entry 개수만큼 나가지만,
+            // "버퍼 생성"은 프레임당 최대 1번(재할당 필요시)뿐임.
+            let mut overlay = OverlayBuilder::default();
+
             if self.tool == Tool::Eraser {
                 cursor::draw_eraser_indicator(
-                    &self.core.device,
-                    &mut pass,
+                    &mut overlay,
                     self.input.last_pen_pos(),
                     super::pointer::ERASER_RADIUS_SCREEN_PX,
                 );
@@ -227,21 +237,38 @@ impl App {
             if self.tool == Tool::Select {
                 if let Some(id) = self.selected_item {
                     if let Some(item) = self.scene.item(id) {
-                        cursor::draw_selection_overlay(&self.core.device, &mut pass, &self.camera, item);
+                        cursor::draw_selection_overlay(&mut overlay, &self.camera, item);
                     }
                 }
             }
 
             match self.tool {
                 Tool::Pen => cursor::draw_tool_icon_at(
-                    &self.core.device, &mut pass, Tool::Pen,
+                    &mut overlay, Tool::Pen,
                     self.input.last_pen_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.boosted(self.pen_color),
                 ),
                 Tool::Select => cursor::draw_tool_icon_at(
-                    &self.core.device, &mut pass, Tool::Select,
+                    &mut overlay, Tool::Select,
                     self.input.last_mouse_pos(), CURSOR_ICON_SIZE_SCREEN_PX, self.boosted(self.pen_color),
                 ),
                 Tool::Eraser => {}
+            }
+
+            if !overlay.entries.is_empty() {
+                if self.overlay_gpu.is_none() {
+                    self.overlay_gpu = Some(OverlayGpu::new(&self.core));
+                }
+                let overlay_gpu = self.overlay_gpu.as_mut().unwrap();
+                overlay_gpu.upload(&self.core, overlay.vertices());
+
+                // ui_pipeline 그대로 재사용(정점 포맷 동일: Vertex{pos}뿐,
+                // 화면좌표계라 카메라 오프셋도 필요 없음 — offset=[0,0]).
+                pass.set_vertex_buffer(0, overlay_gpu.buffer().slice(..));
+                for entry in &overlay.entries {
+                    let immediate = DrawImmediate { offset: [0.0, 0.0], _pad: [0.0; 2], color: entry.color };
+                    pass.set_immediates(0, bytemuck::bytes_of(&immediate));
+                    pass.draw(entry.offset..entry.offset + entry.count, 0..1);
+                }
             }
         }
 

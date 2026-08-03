@@ -35,7 +35,7 @@ impl App {
             pixel_width: w,
             pixel_height: h,
             rgba: Arc::from(rgba.into_raw()),
-            mesh_dirty: true, // 추가: 생성 직후 GPU 리소스를 만들도록 깃발을 세움
+            geometry_dirty: true, // 추가: 생성 직후 GPU 리소스를 만들도록 깃발을 세움
         });
         let cmd = Box::new(AddItem { id, item });
         self.undo_stack.execute(cmd, &mut self.scene);

@@ -2,19 +2,12 @@
 // src/render/tessellate.rs
 // ============================================================
 // Stroke(포인트+압력 리스트) -> 리본형 렌더 메시 변환. 점마다 좌/우
-// 오프셋 정점 쌍 하나씩만 만들고 인접 쌍끼리 삼각형 스트립으로 이음 —
-// "세그먼트/관절"이라는 개념 자체가 없어서(점 하나 = 평균 접선 하나) 
-// 겹치는 프리미티브가 아예 없음. 예전 "포인트마다 원 스탬프" 방식이
-// 관절마다 완전한 원을 겹쳐 그리면서 만들던 라운드 조인 돌기/이중
-// 블렌딩 문제가 구조적으로 발생 불가능해짐. SDF 셰이더도 불필요 —
-// 겹침이 없으니 평범한 삼각형 채우기 + 기존 4x MSAA로 충분.
+// 오프셋 정점 쌍 하나씩만 만들고 인접 쌍끼리 삼각형 스트립으로 이음.
 //
 // 단, 열린 경로(진짜 손글씨 스트로크, Line 도형)의 양 끝 2곳만은
 // 예외 — 반원 팬(라운드 캡)을 추가해서 뭉툭한 끝 마감을 둥글게 처리.
-// 관절마다 겹치던 예전 방식과 달리 스트로크당 딱 2개뿐이라 오버랩/
-// 블렌딩 문제가 재발하지 않음. Shape outline(사각형/원/삼각형)처럼
-// 첫점=끝점인 "닫힌" 경로에는 캡을 붙이면 안 됨(엉뚱한 곳에 혹이
-// 생김) — tessellate_stroke가 첫점/끝점 비교로 자동 구분.
+// Shape outline(사각형/원/삼각형)처럼 첫점=끝점인 "닫힌" 경로에는
+// 캡을 붙이면 안 됨 — tessellate_stroke가 첫점/끝점 비교로 자동 구분.
 
 use crate::render::pipeline::Vertex;
 use crate::scene::Stroke;
@@ -38,9 +31,7 @@ impl IncrementalStrokeMesh {
         Self { origin, vertices: Vec::new(), indices: Vec::new(), has_prev_pair: false }
     }
 
-    /// 점 하나(월드좌표+half_width+단위접선벡터)를 리본에 추가. tangent는
-    /// 호출부가 이웃 점들로부터 미리 계산해서 넘김 — 여기선 오프셋+
-    /// 스트립 연결만 담당(순수 append, 이전 정점은 다시 안 건드림).
+    /// 점 하나(월드좌표+half_width+단위접선벡터)를 리본에 추가.
     pub fn push_point(&mut self, world_pos: [f64; 2], half_width: f32, tangent: [f32; 2]) {
         let local = [
             (world_pos[0] - self.origin[0]) as f32,
@@ -63,12 +54,7 @@ impl IncrementalStrokeMesh {
         self.has_prev_pair = true;
     }
 
-    /// 열린 경로의 시작/끝에 반원 팬(라운드 캡) 추가. forward=false면
-    /// -tangent 방향(시작점보다 더 뒤)으로, forward=true면 +tangent
-    /// 방향(끝점보다 더 앞)으로 부풀어오름. 호(arc) 양 끝 정점은
-    /// push_point의 left/right와 동일한 공식(normal 기준)으로 계산되기
-    /// 때문에 리본과 좌표가 정확히 일치 — 이음매 크랙 없음.
-    /// 닫힌 경로(Shape outline)에는 호출 금지: 호출부에서 판별해서 막음.
+    /// 열린 경로의 시작/끝에 반원 팬(라운드 캡) 추가.
     pub fn push_round_cap(&mut self, world_pos: [f64; 2], tangent: [f32; 2], radius: f32, forward: bool) {
         const SEGMENTS: usize = 12;
         let local = [
@@ -98,9 +84,7 @@ impl IncrementalStrokeMesh {
     }
 }
 
-/// 점 i의 접선을 중심차분으로 추정. prev/next가 없으면(경로 끝) 한쪽만
-/// 보는 편측차분으로 자연스럽게 귀결. 라이브 지오메트리 지연 단계
-/// (app::pointer)와 원샷 tessellate_stroke가 동일 공식을 공유.
+/// 점 i의 접선을 중심차분으로 추정.
 pub fn estimate_tangent(prev: Option<[f64; 2]>, cur: [f64; 2], next: Option<[f64; 2]>) -> [f32; 2] {
     let a = prev.unwrap_or(cur);
     let b = next.unwrap_or(cur);
@@ -109,34 +93,57 @@ pub fn estimate_tangent(prev: Option<[f64; 2]>, cur: [f64; 2], next: Option<[f64
     if len > f32::EPSILON { [dir[0] / len, dir[1] / len] } else { [1.0, 0.0] }
 }
 
-/// 원샷 전체 테셀레이션 — 커밋된 아이템(GpuResourceRegistry)이나 도형
-/// 프리뷰(as_stroke)처럼 전체 점 목록에 랜덤 액세스 가능한 경우용.
-/// 라이브 드로잉과 달리 지연 버퍼링이 필요 없음(전체를 이미 알고 있음).
+/// 원샷 전체 테셀레이션.
+///
+/// [설계 변경] stroke.points는 이제 stroke.anchor 기준 로컬 좌표라,
+/// 테셀레이션 origin(=GPU 렌더용 기준점)도 그냥 anchor를 그대로 씀.
+/// push_point/push_round_cap은 여전히 "world_pos - origin" 공식을
+/// 내부에서 쓰므로, 여기선 local point에 anchor를 다시 더해 world_pos를
+/// 재구성해서 넘겨줌(origin=anchor라 결과적으로 로컬로 되돌아옴 —
+/// 왕복이지만 API를 그대로 재사용할 수 있어 최소 변경). 접선(tangent)
+/// 계산은 차분(diff)이라 anchor 유무와 무관 — 로컬 좌표를 그대로 넘김.
 pub fn tessellate_stroke(stroke: &Stroke) -> StrokeMesh {
     let n = stroke.points.len();
     if n == 0 {
-        return StrokeMesh { origin: [0.0, 0.0], vertices: Vec::new(), indices: Vec::new() };
+        return StrokeMesh { origin: stroke.anchor, vertices: Vec::new(), indices: Vec::new() };
     }
 
-    let mut mesh = IncrementalStrokeMesh::new(stroke.points[0].pos);
-    // 첫점==끝점이면 Shape outline처럼 이미 닫힌 루프 — 캡 생략 대상.
+    let mut mesh = IncrementalStrokeMesh::new(stroke.anchor);
     let is_open = n >= 2 && stroke.points[0].pos != stroke.points[n - 1].pos;
+    let to_world = |local: [f64; 2]| [local[0] + stroke.anchor[0], local[1] + stroke.anchor[1]];
 
     for i in 0..n {
         let p = &stroke.points[i];
         let half_width = stroke.base_width * p.pressure.max(0.05) * 0.5;
-        let prev = if i > 0 { Some(stroke.points[i - 1].pos) } else { None };
-        let next = if i + 1 < n { Some(stroke.points[i + 1].pos) } else { None };
-        let tangent = estimate_tangent(prev, p.pos, next);
+        let prev_local = if i > 0 { Some(stroke.points[i - 1].pos) } else { None };
+        let next_local = if i + 1 < n { Some(stroke.points[i + 1].pos) } else { None };
+        let tangent = estimate_tangent(prev_local, p.pos, next_local);
+        let cur_world = to_world(p.pos);
 
         if is_open && i == 0 {
-            mesh.push_round_cap(p.pos, tangent, half_width, false);
+            mesh.push_round_cap(cur_world, tangent, half_width, false);
         }
-        mesh.push_point(p.pos, half_width, tangent);
+        mesh.push_point(cur_world, half_width, tangent);
         if is_open && i == n - 1 {
-            mesh.push_round_cap(p.pos, tangent, half_width, true);
+            mesh.push_round_cap(cur_world, tangent, half_width, true);
         }
     }
 
     StrokeMesh { origin: mesh.origin, vertices: mesh.vertices, indices: mesh.indices }
+}
+
+/// Stroke의 로컬(anchor 기준) padded bbox — 뷰포트 컬링 캐시용.
+/// 지오메트리가 바뀔 때(geometry_dirty)만 호출되고, 위치만 바뀔 땐
+/// 이 값이 그대로 재사용됨(anchor만 더해서 world bbox를 얻음).
+pub fn local_padded_bbox(stroke: &Stroke) -> ([f64; 2], [f64; 2]) {
+    let mut min = [f64::MAX, f64::MAX];
+    let mut max = [f64::MIN, f64::MIN];
+    for p in &stroke.points {
+        min[0] = min[0].min(p.pos[0]);
+        min[1] = min[1].min(p.pos[1]);
+        max[0] = max[0].max(p.pos[0]);
+        max[1] = max[1].max(p.pos[1]);
+    }
+    let pad = stroke.base_width as f64 * 0.5;
+    ([min[0] - pad, min[1] - pad], [max[0] + pad, max[1] + pad])
 }

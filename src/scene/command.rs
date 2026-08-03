@@ -41,9 +41,6 @@ impl Command for DeleteItems {
     }
 }
 
-/// 이동 — 아이템 종류 상관없이 delta 하나로 통일(CanvasItem::translate
-/// 참고). 드래그 중엔 Scene을 직접 수정하다가 끝나는 시점에
-/// push_already_applied로 등록(지우개와 동일 패턴).
 #[derive(Debug)]
 pub struct MoveItems {
     pub ids: Vec<ItemId>,
@@ -67,7 +64,6 @@ impl Command for MoveItems {
     }
 }
 
-/// 이미지 리사이즈 — before/after (top_left, size) 스냅샷.
 #[derive(Debug)]
 pub struct ResizeImage {
     pub id: ItemId,
@@ -87,9 +83,6 @@ impl Command for ResizeImage {
     }
 }
 
-/// Shape 변형(이동/리사이즈/회전) — 드래그 한 번에 무슨 조합으로
-/// 바뀌었든 (center, half_extent, rotation) 전체를 통째로 스냅샷해서
-/// 하나의 커맨드로 묶음.
 #[derive(Debug)]
 pub struct TransformShape {
     pub id: ItemId,
@@ -102,7 +95,7 @@ impl Command for TransformShape {
             sh.center = self.after.0;
             sh.half_extent = self.after.1;
             sh.rotation = self.after.2;
-            sh.mesh_dirty = true;
+            sh.geometry_dirty = true;
         }
     }
     fn undo(&self, scene: &mut Scene) {
@@ -110,7 +103,7 @@ impl Command for TransformShape {
             sh.center = self.before.0;
             sh.half_extent = self.before.1;
             sh.rotation = self.before.2;
-            sh.mesh_dirty = true;
+            sh.geometry_dirty = true;
         }
     }
 }

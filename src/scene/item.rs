@@ -18,10 +18,11 @@ pub struct PenPoint {
 
 #[derive(Debug, Clone)]
 pub struct Stroke {
+    pub anchor: [f64; 2],
     pub points: Vec<PenPoint>,
     pub color: [f32; 4],
     pub base_width: f32,
-    pub mesh_dirty: bool,
+    pub geometry_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -31,14 +32,16 @@ pub struct ImageItem {
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub rgba: std::sync::Arc<[u8]>,
-    pub mesh_dirty: bool, // 추가됨: 이동/리사이즈 될때 GPU 버텍스 갱신을 알리기 위함
+    pub geometry_dirty: bool,
 }
 
 impl ImageItem {
     pub fn set_bounds(&mut self, top_left: [f64; 2], size: [f64; 2]) {
+        if size != self.size {
+            self.geometry_dirty = true;
+        }
         self.top_left = top_left;
         self.size = size;
-        self.mesh_dirty = true; // 변경 알림
     }
 }
 
@@ -47,7 +50,7 @@ pub enum ShapeKind {
     Circle,
     Line,
     Rectangle,
-    Triangle, // 추가됨
+    Triangle,
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +61,7 @@ pub struct Shape {
     pub rotation: f32,
     pub color: [f32; 4],
     pub stroke_width: f32,
-    pub mesh_dirty: bool,
+    pub geometry_dirty: bool,
 }
 
 impl Shape {
@@ -79,21 +82,20 @@ impl Shape {
             }
             ShapeKind::Line => vec![[-hx, 0.0], [hx, 0.0]],
             ShapeKind::Triangle => vec![
-                [0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy], // 위(중앙), 우측하단, 좌측하단, 닫기
+                [0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy],
             ],
         }
     }
 
-    pub fn world_outline(&self) -> Vec<[f64; 2]> {
+    /// rotation만 반영하고 center는 안 더한 로컬 outline. as_stroke()가
+    /// 여길 쓰면 "이동"은 anchor(=center) 갱신만으로 끝나고, "회전/
+    /// 리사이즈"일 때만 재계산됨 — Stroke의 anchor/points 분리와 동일 원칙.
+    fn rotated_local_outline(&self) -> Vec<[f64; 2]> {
         let sin_r = (self.rotation as f64).sin();
         let cos_r = (self.rotation as f64).cos();
         self.local_outline()
             .into_iter()
-            .map(|[lx, ly]| {
-                let rx = lx * cos_r - ly * sin_r;
-                let ry = lx * sin_r + ly * cos_r;
-                [self.center[0] + rx, self.center[1] + ry]
-            })
+            .map(|[lx, ly]| [lx * cos_r - ly * sin_r, lx * sin_r + ly * cos_r])
             .collect()
     }
 
@@ -147,12 +149,16 @@ impl Shape {
         }
     }
 
+    /// [변경] world_outline() 제거 — anchor(=center) + 로컬 outline으로
+    /// 분리. 호출부(GpuResourceRegistry)가 anchor는 origin으로,
+    /// points는 그대로 테셀레이션 입력으로 씀.
     pub fn as_stroke(&self) -> Stroke {
         Stroke {
-            points: self.world_outline().into_iter().map(|pos| PenPoint { pos, pressure: 1.0 }).collect(),
+            anchor: self.center,
+            points: self.rotated_local_outline().into_iter().map(|pos| PenPoint { pos, pressure: 1.0 }).collect(),
             color: self.color,
             base_width: self.stroke_width,
-            mesh_dirty: true,
+            geometry_dirty: true, // 이 Stroke는 즉시 소모되는 임시 객체라 의미 없음
         }
     }
 }
@@ -188,15 +194,17 @@ impl CanvasItem {
                 let r = radius + (s.base_width as f64 * 0.5);
                 let r_sq = r * r;
                 if s.points.is_empty() { return false; }
+                // 쿼리 점을 한 번만 로컬로 변환(anchor 뺄셈 1회).
+                let lq = [point[0] - s.anchor[0], point[1] - s.anchor[1]];
                 if s.points.len() == 1 {
-                    let dx = point[0] - s.points[0].pos[0];
-                    let dy = point[1] - s.points[0].pos[1];
+                    let dx = lq[0] - s.points[0].pos[0];
+                    let dy = lq[1] - s.points[0].pos[1];
                     return (dx * dx + dy * dy) <= r_sq;
                 }
                 for i in 0..s.points.len() - 1 {
                     let p0 = s.points[i].pos;
                     let p1 = s.points[i + 1].pos;
-                    if segment_dist_sq(p0, p1, point) <= r_sq {
+                    if segment_dist_sq(p0, p1, lq) <= r_sq {
                         return true;
                     }
                 }
@@ -207,29 +215,28 @@ impl CanvasItem {
         }
     }
 
+    /// [핵심 불변식] 세 타입 전부 anchor/center/top_left "만" 갱신.
+    /// geometry_dirty는 여기서 절대 세우지 않음 — 이동은 항상 O(1),
+    /// GPU 버퍼 무관.
     pub fn translate(&mut self, delta: [f64; 2]) {
         match self {
             CanvasItem::Stroke(s) => {
-                for p in s.points.iter_mut() {
-                    p.pos[0] += delta[0];
-                    p.pos[1] += delta[1];
-                }
-                s.mesh_dirty = true;
+                s.anchor[0] += delta[0];
+                s.anchor[1] += delta[1];
             }
             CanvasItem::Image(img) => {
                 img.top_left[0] += delta[0];
                 img.top_left[1] += delta[1];
-                img.mesh_dirty = true; // 변경 알림
             }
             CanvasItem::Shape(sh) => {
                 sh.center[0] += delta[0];
                 sh.center[1] += delta[1];
-                sh.mesh_dirty = true;
             }
         }
     }
 }
 
+/// local 좌표 기준으로 min/max 구한 뒤 anchor를 한 번만 더함.
 pub fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
     let mut min = [f64::MAX, f64::MAX];
     let mut max = [f64::MIN, f64::MIN];
@@ -239,7 +246,7 @@ pub fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
         max[0] = max[0].max(p.pos[0]);
         max[1] = max[1].max(p.pos[1]);
     }
-    (min, max)
+    ([min[0] + s.anchor[0], min[1] + s.anchor[1]], [max[0] + s.anchor[0], max[1] + s.anchor[1]])
 }
 
 pub fn segment_dist_sq(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {

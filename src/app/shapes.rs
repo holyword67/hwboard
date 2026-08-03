@@ -86,7 +86,7 @@ pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
             rotation,
             color: stroke.color,
             stroke_width: stroke.base_width,
-            mesh_dirty: true,
+            geometry_dirty: true,
         };
         let snap = SnapData {
             kind: ShapeKind::Line,
@@ -128,7 +128,7 @@ pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
         rotation: 0.0,
         color: stroke.color,
         stroke_width: stroke.base_width,
-        mesh_dirty: true,
+        geometry_dirty: true,
     };
     let snap = SnapData {
         kind,

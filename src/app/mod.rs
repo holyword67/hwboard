@@ -23,7 +23,7 @@ use sdl3::video::Window;
 use std::time::Instant;
 
 use crate::render::tessellate::IncrementalStrokeMesh;
-use render::{LiveStrokeGpu, UiCache};
+use render::{LiveStrokeGpu, OverlayGpu, UiCache};
 use select::SelectDrag;
 use shapes::SnapData;
 
@@ -87,6 +87,9 @@ pub struct App {
     /// 그리는 중인 자유획 전용 growable GPU 버퍼 — 스트로크가 끝나도
     /// 안 버리고 재사용(다음 획에서 synced 카운터만 리셋).
     live_stroke_gpu: Option<LiveStrokeGpu>,
+    /// 지우개 인디케이터/선택 오버레이/커스텀 커서 전용 growable 버퍼(C) —
+    /// live_stroke_gpu와 마찬가지로 세션 내내 재사용, 매 프레임 내용만 갱신.
+    overlay_gpu: Option<OverlayGpu>,
     mouse: MouseUtil,
 }
 
@@ -136,6 +139,7 @@ impl App {
             ui_dirty: true,
             ui_cache: None,
             live_stroke_gpu: None,
+            overlay_gpu: None,
             mouse,
         }
     }

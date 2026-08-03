@@ -134,7 +134,7 @@ impl App {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item_mut(*id) {
                     let local = sh.to_local(world);
                     sh.half_extent = [local[0].abs(), local[1].abs()];
-                    sh.mesh_dirty = true;
+                    sh.geometry_dirty = true;
                 }
             }
             SelectDrag::ResizeImage { id, anchor_center, .. } => {
@@ -150,7 +150,7 @@ impl App {
                 if let Some(CanvasItem::Shape(sh)) = self.scene.item_mut(*id) {
                     let angle = (world[1] - sh.center[1]).atan2(world[0] - sh.center[0]);
                     sh.rotation = (angle + std::f64::consts::FRAC_PI_2) as f32;
-                    sh.mesh_dirty = true;
+                    sh.geometry_dirty = true;
                 }
             }
         }
