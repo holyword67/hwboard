@@ -16,13 +16,13 @@
 
 use crate::scene::{PenPoint, Shape, ShapeKind, Stroke};
 
-pub(super) struct SnapData {
-    pub(super) kind: ShapeKind,
-    pub(super) center: [f64; 2], // 원/사각형: 회전+스케일 기준 중심(고정)
-    pub(super) initial_pen: [f64; 2], // 스냅된 순간의 펜 위치
-    pub(super) initial_half_extent: [f64; 2],
-    pub(super) initial_rotation: f32,
-    pub(super) line_start: [f64; 2], // 직선 전용: 고정된 시작점
+pub struct SnapData {
+    pub kind: ShapeKind,
+    pub center: [f64; 2], // 원/사각형: 회전+스케일 기준 중심(고정)
+    pub initial_pen: [f64; 2], // 스냅된 순간의 펜 위치
+    pub initial_half_extent: [f64; 2],
+    pub initial_rotation: f32,
+    pub line_start: [f64; 2], // 직선 전용: 고정된 시작점
 }
 
 /// RDP(Ramer-Douglas-Peucker) 알고리즘으로 자잘한 곡선을 단순한 다각형으로 축약합니다.
@@ -60,7 +60,8 @@ fn rdp(points: &[PenPoint], epsilon: f64, out: &mut Vec<PenPoint>) {
 
 /// 자유필기 스트로크를 분석해서 완벽한 기하학적 Shape로 인식을 시도.
 /// 성공하면 (초기 Shape, 라이브 드래그용 SnapData)를 돌려줌.
-pub(super) fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
+#[doc(hidden)]
+pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
     if stroke.points.len() < 10 {
         return None;
     }

@@ -18,3 +18,7 @@ opt-level = 3
 
 [dev-dependencies]
 divan = "0.1.21"
+
+[[bench]]
+name = "macro_systems"
+harness = false # divan 자체 하네스를 사용하기 위해 필수

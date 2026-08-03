@@ -5,7 +5,7 @@ mod clipboard_paste;
 mod pointer;
 mod render;
 mod select;
-mod shapes;
+pub mod shapes;
 
 use crate::gpu::core::GpuCore;
 use crate::input::{InputEvent, InputState};

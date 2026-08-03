@@ -3,15 +3,7 @@
 // ============================================================
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-mod clipboard;
-mod gpu;
-mod input;
-mod render;
-mod scene;
-mod ui;
-
-use app::App;
+use hwboard::app::App;
 use std::time::Duration;
 
 /// 펜이 눌린 채 멈춰있는 동안(Hold=도형 자동스냅 감지 필요) 깨어나는
