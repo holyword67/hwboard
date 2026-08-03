@@ -1,0 +1,8 @@
+edition = "2024"
+max_width = 100
+
+struct_lit_width = 0      # wgpu 구조체 리터럴 — 계속 유지 (원래 문제였던 부분)
+array_width = 0           # entries: &[...] 배열 — 계속 유지
+fn_call_width = 60        # [되돌림] 함수 호출은 기본값으로 복귀
+chain_width = 60
+attr_fn_like_width = 70
