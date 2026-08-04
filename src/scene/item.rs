@@ -2,6 +2,7 @@
 // src/scene/item.rs
 // ============================================================
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub type ItemId = u64;
 
@@ -21,10 +22,53 @@ pub struct PenPoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stroke {
     pub anchor: [f64; 2],
-    pub points: Vec<PenPoint>,
+    #[serde(serialize_with = "serialize_points", deserialize_with = "deserialize_points")]
+    pub points: Arc<[PenPoint]>,
     pub color: [f32; 4],
     pub base_width: f32,
     pub geometry_dirty: bool,
+    /// 로컬(anchor 기준) 미패딩 bbox 캐시. Stroke는 커밋 후 points가
+    /// 절대 안 바뀌므로(부분삭제 없음, translate는 anchor만 갱신) 생성
+    /// 시점에 딱 한 번만 계산하면 평생 재계산 불필요 — dirty flag조차
+    /// 필요 없음. private로 막아서 Stroke::new() 경유를 강제(직접
+    /// struct literal로 stale 값 넣는 걸 컴파일 타임에 차단).
+    local_bbox: ([f64; 2], [f64; 2]),
+}
+
+fn serialize_points<S: serde::Serializer>(points: &Arc<[PenPoint]>, s: S) -> Result<S::Ok, S::Error> {
+    // Arc<[T]>는 serde 기본 Serialize가 없어서(rc feature 없이) 수동 처리.
+    // PenPoint는 raw byte가 아니라서 rgba처럼 serialize_bytes 고속경로는
+    // 못 씀 — derive가 Vec<PenPoint>에 했을 법한 것과 동일한 seq 인코딩.
+    s.collect_seq(points.iter())
+}
+
+fn deserialize_points<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Arc<[PenPoint]>, D::Error> {
+    let v = Vec::<PenPoint>::deserialize(d)?;
+    Ok(Arc::from(v))
+}
+
+impl Stroke {
+    /// 유일한 생성 경로. bbox 캐시를 여기서 한 번 계산하고 points를
+    /// Arc로 감쌈(커밋 후 clone은 refcount 증가만 — O(1)).
+    pub fn new(anchor: [f64; 2], points: Vec<PenPoint>, color: [f32; 4], base_width: f32) -> Self {
+        let local_bbox = points_bbox(&points);
+        Self {
+            anchor,
+            points: Arc::from(points),
+            color,
+            base_width,
+            geometry_dirty: true,
+            local_bbox,
+        }
+    }
+
+    pub fn bounding_box(&self) -> ([f64; 2], [f64; 2]) {
+        let (min, max) = self.local_bbox;
+        (
+            [min[0] + self.anchor[0], min[1] + self.anchor[1]],
+            [max[0] + self.anchor[0], max[1] + self.anchor[1]],
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,38 +77,30 @@ pub struct ImageItem {
     pub size: [f64; 2],
     pub pixel_width: u32,
     pub pixel_height: u32,
-    // Arc<[u8]>(unsized)는 serde가 기본으로 못 다뤄서 Vec<u8> 왕복으로
-    // 수동 변환. serde_bytes 크레이트 없이 std serde만으로 처리(의존성
-    // 안 늘림) — 이미지 붙여넣기가 잦은 이벤트가 아니라 바이트 하나씩
-    // seq로 인코딩되는 비효율은 감수(가설: 체감 안 될 것).
     #[serde(serialize_with = "serialize_rgba", deserialize_with = "deserialize_rgba")]
-    pub rgba: std::sync::Arc<[u8]>,
+    pub rgba: Arc<[u8]>,
     pub geometry_dirty: bool,
 }
 
-fn serialize_rgba<S: serde::Serializer>(data: &std::sync::Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
-    // serialize_bytes()는 postcard 기준 "길이 varint 하나 + 통째로 복사"
-    // 고속 경로(실측 확인: try_extend 한 방). 예전처럼 [u8] 일반 슬라이스로
-    // 넘기면 원소(픽셀 바이트) 하나하나마다 함수 호출이 도는 seq 경로를 탐 —
-    // 큰 이미지일수록 이 차이가 커짐.
+fn serialize_rgba<S: serde::Serializer>(data: &Arc<[u8]>, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_bytes(data)
 }
 
-fn deserialize_rgba<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::sync::Arc<[u8]>, D::Error> {
+fn deserialize_rgba<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Arc<[u8]>, D::Error> {
     struct BytesVisitor;
     impl<'de> serde::de::Visitor<'de> for BytesVisitor {
-        type Value = std::sync::Arc<[u8]>;
+        type Value = Arc<[u8]>;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             write!(f, "byte array")
         }
         fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
-            Ok(std::sync::Arc::from(v))
+            Ok(Arc::from(v))
         }
         fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
-            Ok(std::sync::Arc::from(v))
+            Ok(Arc::from(v))
         }
         fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
-            Ok(std::sync::Arc::from(v))
+            Ok(Arc::from(v))
         }
     }
     d.deserialize_bytes(BytesVisitor)
@@ -103,9 +139,7 @@ impl Shape {
     fn local_outline(&self) -> Vec<[f64; 2]> {
         let (hx, hy) = (self.half_extent[0], self.half_extent[1]);
         match self.kind {
-            ShapeKind::Rectangle => vec![
-                [-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy],
-            ],
+            ShapeKind::Rectangle => vec![[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]],
             ShapeKind::Circle => {
                 const SEGMENTS: usize = 64;
                 (0..=SEGMENTS)
@@ -116,9 +150,7 @@ impl Shape {
                     .collect()
             }
             ShapeKind::Line => vec![[-hx, 0.0], [hx, 0.0]],
-            ShapeKind::Triangle => vec![
-                [0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy],
-            ],
+            ShapeKind::Triangle => vec![[0.0, -hy], [hx, hy], [-hx, hy], [0.0, -hy]],
         }
     }
 
@@ -182,12 +214,22 @@ impl Shape {
     }
 
     pub fn as_stroke(&self) -> Stroke {
+        let points: Vec<PenPoint> = self
+            .rotated_local_outline()
+            .into_iter()
+            .map(|pos| PenPoint { pos, pressure: 1.0 })
+            .collect();
+        // 이 Stroke는 outline 렌더링(tessellate_stroke)용 1회성 임시
+        // 객체 — .bounding_box()를 호출하는 곳이 없어서 Stroke::new()의
+        // bbox 계산은 낭비. 같은 모듈이라 private 필드 직접 literal
+        // 가능 — 더미값으로 스킵.
         Stroke {
             anchor: self.center,
-            points: self.rotated_local_outline().into_iter().map(|pos| PenPoint { pos, pressure: 1.0 }).collect(),
+            points: Arc::from(points),
             color: self.color,
             base_width: self.stroke_width,
             geometry_dirty: true,
+            local_bbox: ([0.0, 0.0], [0.0, 0.0]),
         }
     }
 }
@@ -195,7 +237,7 @@ impl Shape {
 impl CanvasItem {
     pub fn bounding_box(&self) -> ([f64; 2], [f64; 2]) {
         match self {
-            CanvasItem::Stroke(s) => stroke_bbox(s),
+            CanvasItem::Stroke(s) => s.bounding_box(),
             CanvasItem::Image(img) => (img.top_left, [img.top_left[0] + img.size[0], img.top_left[1] + img.size[1]]),
             CanvasItem::Shape(sh) => {
                 let corners = sh.world_corners();
@@ -261,16 +303,20 @@ impl CanvasItem {
     }
 }
 
-pub fn stroke_bbox(s: &Stroke) -> ([f64; 2], [f64; 2]) {
+/// 점들의 미패딩 로컬 bbox. `Stroke::new()`가 커밋 시점에 1회 호출해서
+/// 캐싱하고, `shapes::recognize_shape`가 커밋 전 라이브 포인트에 대해
+/// 직접 호출(그리는 중엔 Stroke가 아직 없어서 캐시 재사용 불가 —
+/// Hold 이벤트당 1회뿐이라 문제 없음).
+pub fn points_bbox(points: &[PenPoint]) -> ([f64; 2], [f64; 2]) {
     let mut min = [f64::MAX, f64::MAX];
     let mut max = [f64::MIN, f64::MIN];
-    for p in &s.points {
+    for p in points {
         min[0] = min[0].min(p.pos[0]);
         min[1] = min[1].min(p.pos[1]);
         max[0] = max[0].max(p.pos[0]);
         max[1] = max[1].max(p.pos[1]);
     }
-    ([min[0] + s.anchor[0], min[1] + s.anchor[1]], [max[0] + s.anchor[0], max[1] + s.anchor[1]])
+    (min, max)
 }
 
 pub fn segment_dist_sq(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {

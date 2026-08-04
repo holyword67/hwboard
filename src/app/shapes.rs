@@ -3,26 +3,28 @@
 // ============================================================
 // 도형 자동스냅(Shape Recognizer) — App 상태와 무관한 순수 로직만 모음.
 // Hold 이벤트가 오면 pointer.rs가 recognize_shape를 호출해서 그리는
-// 중인 Stroke를 실제 CanvasItem::Shape(center/half_extent/rotation
+// 중인 점들을 실제 CanvasItem::Shape(center/half_extent/rotation
 // 통일 모델)로 변환한다. 이후 펜을 계속 누른 채 움직이면 pointer.rs가
-// SnapData를 참고해 그 Shape을 라이브로 리사이즈/회전함.
+// SnapData를 참고해 그 Shape을 라이브로 리사이즈/회전한다.
 //
-// [알려진 제약] Shape enum(scene/item.rs)엔 Circle/Line/Rectangle
-// 세 종류만 있고 Triangle이 없음 — RDP 결과가 4점(삼각형 후보)이어도
-// 지금은 원으로 분류됨. 예전엔 "가짜 정형화"로나마 삼각형 모양이라도
-// 나왔는데, 이번 리팩터로 그마저 사라진 셈 — 필요하면
-// ShapeKind::Triangle을 추가해서 되살릴 수 있음(지금은 스코프 밖,
-// 명시적으로 확인 안 받고 넘어간 부분이라 짚어둠).
+// [설계 변경] Stroke(커밋 타입) 대신 points/color/base_width를 직접
+// 받도록 시그니처 변경 — Stroke.points가 Arc<[PenPoint]>로 바뀌면서
+// 커밋 전 라이브 상태(DrawingStroke, Vec 기반)와 타입이 분리됐기 때문.
+// 이 함수는 애초에 "순수 로직"이라고 스스로 문서화해뒀던 만큼, 구체
+// 타입에 안 묶이는 게 오히려 원래 의도에 더 맞음.
+//
+// [알려진 제약] Shape enum(scene/item.rs)엔 Circle/Line/Rectangle/
+// Triangle 네 종류가 있음.
 
-use crate::scene::{PenPoint, Shape, ShapeKind, Stroke};
+use crate::scene::{PenPoint, Shape, ShapeKind};
 
 pub struct SnapData {
     pub kind: ShapeKind,
-    pub center: [f64; 2], // 원/사각형: 회전+스케일 기준 중심(고정)
-    pub initial_pen: [f64; 2], // 스냅된 순간의 펜 위치
+    pub center: [f64; 2],
+    pub initial_pen: [f64; 2],
     pub initial_half_extent: [f64; 2],
     pub initial_rotation: f32,
-    pub line_start: [f64; 2], // 직선 전용: 고정된 시작점
+    pub line_start: [f64; 2],
 }
 
 /// RDP(Ramer-Douglas-Peucker) 알고리즘으로 자잘한 곡선을 단순한 다각형으로 축약합니다.
@@ -58,22 +60,22 @@ fn rdp(points: &[PenPoint], epsilon: f64, out: &mut Vec<PenPoint>) {
     }
 }
 
-/// 자유필기 스트로크를 분석해서 완벽한 기하학적 Shape로 인식을 시도.
+/// 자유필기 점들을 분석해서 완벽한 기하학적 Shape로 인식을 시도.
 /// 성공하면 (초기 Shape, 라이브 드래그용 SnapData)를 돌려줌.
 #[doc(hidden)]
-pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
-    if stroke.points.len() < 10 {
+pub fn recognize_shape(points: &[PenPoint], color: [f32; 4], base_width: f32) -> Option<(Shape, SnapData)> {
+    if points.len() < 10 {
         return None;
     }
 
-    let (min, max) = crate::scene::stroke_bbox(stroke);
+    let (min, max) = crate::scene::points_bbox(points);
     let diag = ((max[0] - min[0]).powi(2) + (max[1] - min[1]).powi(2)).sqrt();
     if diag < 10.0 {
         return None;
     }
 
-    let first = stroke.points.first().unwrap().pos;
-    let last = stroke.points.last().unwrap().pos;
+    let first = points.first().unwrap().pos;
+    let last = points.last().unwrap().pos;
 
     let start_end_dist = ((first[0] - last[0]).powi(2) + (first[1] - last[1]).powi(2)).sqrt();
     let closed = start_end_dist < diag * 0.2;
@@ -97,8 +99,8 @@ pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
             center: mid,
             half_extent,
             rotation,
-            color: stroke.color,
-            stroke_width: stroke.base_width,
+            color,
+            stroke_width: base_width,
             geometry_dirty: true,
         };
         let snap = SnapData {
@@ -112,7 +114,7 @@ pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
         return Some((shape, snap));
     }
 
-    let mut process_points = stroke.points.clone();
+    let mut process_points = points.to_vec();
     let last_idx = process_points.len() - 1;
     process_points[last_idx].pos = process_points[0].pos;
 
@@ -120,9 +122,6 @@ pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
     rdp(&process_points, diag * 0.12, &mut simplified);
     let v_count = simplified.len();
 
-    // v_count==5(4개 꼭짓점+닫는 점)면 사각형, 그 외(원래 삼각형 후보인
-    // v_count==4 포함)는 전부 원으로 분류.
-    // 수정, 5점(꼭짓점 4개+닫는 점)은 사각형, 4점(꼭짓점 3개+닫는 점)은 삼각형, 나머진 원
     let kind = if v_count == 5 {
         ShapeKind::Rectangle
     } else if v_count == 4 {
@@ -145,8 +144,8 @@ pub fn recognize_shape(stroke: &Stroke) -> Option<(Shape, SnapData)> {
         center,
         half_extent,
         rotation: 0.0,
-        color: stroke.color,
-        stroke_width: stroke.base_width,
+        color,
+        stroke_width: base_width,
         geometry_dirty: true,
     };
     let snap = SnapData {

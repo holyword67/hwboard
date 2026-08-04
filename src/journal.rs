@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
-const JOURNAL_VERSION: u8 = 1;
+const JOURNAL_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JournalEvent {

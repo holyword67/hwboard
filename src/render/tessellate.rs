@@ -219,7 +219,7 @@ pub fn local_padded_bbox(stroke: &Stroke) -> ([f64; 2], [f64; 2]) {
         f64::MIN,
         f64::MIN,
     ];
-    for p in &stroke.points {
+    for p in stroke.points.iter() {
         min[0] = min[0].min(p.pos[0]);
         min[1] = min[1].min(p.pos[1]);
         max[0] = max[0].max(p.pos[0]);

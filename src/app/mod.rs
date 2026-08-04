@@ -16,7 +16,7 @@ use crate::render::pipeline::StrokePipeline;
 use crate::render::ui_pipeline::UiPipeline;
 use crate::journal;
 use crate::scene::{
-    CanvasItem, ClearAll, Command, ItemId, PenPoint, Scene, Shape, Stroke, UndoStack,
+    CanvasItem, ClearAll, Command, ItemId, PenPoint, Scene, Shape, UndoStack,
 };
 use std::thread::JoinHandle;
 use crate::ui;
@@ -27,7 +27,7 @@ use sdl3::video::Window;
 use std::time::Instant;
 
 use crate::render::tessellate::IncrementalStrokeMesh;
-use render::{LiveStrokeGpu, OverlayGpu, UiCache};
+use render::{LiveStrokeGpu, OverlayBuilder, OverlayGpu, UiCache};
 use select::SelectDrag;
 use shapes::SnapData;
 
@@ -38,6 +38,15 @@ pub enum Tool {
     Pen,
     Eraser,
     Select,
+}
+
+/// 그리는 중인 자유획의 임시 상태(커밋 전). Stroke와 달리 points가
+/// 순수 Vec라 push 가능 — anchor 확정(로컬화)과 bbox 캐싱은 Up 시점에
+/// Stroke::new()로 커밋할 때만 1회 발생.
+struct DrawingStroke {
+    points: Vec<PenPoint>,
+    color: [f32; 4],
+    base_width: f32,
 }
 
 pub struct App {
@@ -53,7 +62,7 @@ pub struct App {
     tool: Tool,
     pen_color: [f32; 4],
     pen_width: f32,
-    drawing_stroke: Option<Stroke>,
+    drawing_stroke: Option<DrawingStroke>,
     /// Hold로 도형 인식이 성공하면 drawing_stroke 대신 여기로 옮겨져서
     /// 라이브 리사이즈/회전 프리뷰가 됨. Up 시점에 이게 Some이면 이걸
     /// CanvasItem::Shape로 커밋하고, None이면 drawing_stroke를 그대로
@@ -94,6 +103,8 @@ pub struct App {
     /// 지우개 인디케이터/선택 오버레이/커스텀 커서 전용 growable 버퍼(C) —
     /// live_stroke_gpu와 마찬가지로 세션 내내 재사용, 매 프레임 내용만 갱신.
     overlay_gpu: Option<OverlayGpu>,
+    /// 오버레이 CPU 빌더 — 매 프레임 clear()만 하고 Vec capacity는 재사용.
+    overlay: OverlayBuilder,
     /// 저장 스레드 핸들 — Quit 시점에 join해서 "정상 종료는 유실 없음"을 보장.
     journal_thread: Option<JoinHandle<()>>,
     mouse: MouseUtil,
@@ -154,6 +165,7 @@ impl App {
             ui_cache: None,
             live_stroke_gpu: None,
             overlay_gpu: None,
+            overlay: OverlayBuilder::default(),
             journal_thread: Some(journal_thread),
             mouse,
         }

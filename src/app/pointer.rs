@@ -1,7 +1,7 @@
 // ============================================================
 // src/app/pointer.rs
 // ============================================================
-use super::{App, Tool};
+use super::{App, DrawingStroke, Tool};
 use crate::input::{PointerEvent, PointerSource};
 use crate::render::tessellate::estimate_tangent;
 use crate::scene::{AddItem, CanvasItem, Command, DeleteItems, PenPoint, ShapeKind, Stroke};
@@ -81,17 +81,10 @@ impl App {
                 self.snap_state = None;
                 self.drawing_shape_preview = None;
                 let world = self.camera.screen_to_world(s.pos);
-                // anchor=[0,0]으로 두고 그리는 동안은 points를 월드좌표
-                // 그대로 씀(로컬=월드, anchor가 원점이라 등가) — Up
-                // 시점에 첫 점을 anchor로 확정하고 나머지를 로컬화함.
-                self.drawing_stroke = Some(Stroke {
-                    anchor: [
-                        0.0, 0.0,
-                    ],
+                self.drawing_stroke = Some(DrawingStroke {
                     points: Vec::new(),
                     color: self.pen_color,
                     base_width: self.pen_width,
-                    geometry_dirty: true,
                 });
                 self.drawing_mesh_cache =
                     Some(crate::render::tessellate::IncrementalStrokeMesh::new(world));
@@ -216,20 +209,18 @@ impl App {
                         });
                     }
                     if stroke.points.len() >= 2 {
-                        // [A] anchor 확정 — 첫 점의(지금은 아직 월드=로컬인)
-                        // 좌표를 anchor로 삼고, 모든 점을 그 기준 로컬로
-                        // 변환. 이 이후로 이 스트로크를 옮기는 건
-                        // translate()가 anchor만 바꾸는 것으로 끝남(O(1),
-                        // GPU 재테셀레이션 없음).
+                        // anchor 확정 — 첫 점 좌표를 anchor로 삼고 모든 점을
+                        // 그 기준 로컬로 변환한 뒤 Stroke::new()로 커밋
+                        // (여기서 Arc 변환 + bbox 캐싱이 1회 발생).
                         let anchor = stroke.points[0].pos;
                         for p in stroke.points.iter_mut() {
                             p.pos[0] -= anchor[0];
                             p.pos[1] -= anchor[1];
                         }
-                        stroke.anchor = anchor;
 
                         let id = self.scene.alloc_id();
-                        let cmd = Command::AddItem(AddItem { id, item: CanvasItem::Stroke(stroke) });
+                        let committed = Stroke::new(anchor, stroke.points, stroke.color, stroke.base_width);
+                        let cmd = Command::AddItem(AddItem { id, item: CanvasItem::Stroke(committed) });
                         self.undo_stack.execute(cmd, &mut self.scene);
                     }
                 }
@@ -239,7 +230,9 @@ impl App {
                     return;
                 }
                 if let Some(stroke) = &self.drawing_stroke {
-                    if let Some((shape, snap_data)) = super::shapes::recognize_shape(stroke) {
+                    if let Some((shape, snap_data)) =
+                        super::shapes::recognize_shape(&stroke.points, stroke.color, stroke.base_width)
+                    {
                         self.drawing_shape_preview = Some(shape);
                         self.drawing_stroke = None;
                         self.drawing_mesh_cache = None;
@@ -336,13 +329,14 @@ impl App {
         let world = self.camera.screen_to_world(screen_pos);
         let r = (ERASER_RADIUS_SCREEN_PX / self.camera.zoom) as f64;
 
+        // [최적화] "이미 지운 아이템인지" 선형탐색 체크 제거 — 아래서
+        // scene.remove(id)로 즉시 씬에서 빠지므로 다음 호출의
+        // iter_ordered_with_id_rev()엔 애초에 등장할 수 없어 원래도
+        // 무의미한 검사였음.
         let hit = self
             .scene
             .iter_ordered_with_id_rev()
             .find_map(|(id, item)| {
-                if self.erasing_removed.iter().any(|(rid, _, _)| *rid == id) {
-                    return None;
-                }
                 if matches!(item, CanvasItem::Image(_)) {
                     return None;
                 }

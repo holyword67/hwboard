@@ -61,6 +61,11 @@ impl OverlayBuilder {
         &self.vertices
     }
 
+    pub(in crate::app) fn clear(&mut self) {
+        self.vertices.clear();
+        self.entries.clear();
+    }
+
     pub(in crate::app) fn push_quad(&mut self, rect: ui::Rect, color: [f32; 4]) {
         let (x0, y0, x1, y1) = (rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
         let offset = self.vertices.len() as u32;

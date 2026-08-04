@@ -7,8 +7,7 @@ mod overlay;
 mod ui_cache;
 
 pub(in crate::app) use live_stroke::LiveStrokeGpu;
-use overlay::OverlayBuilder;
-pub(in crate::app) use overlay::OverlayGpu;
+pub(in crate::app) use overlay::{OverlayBuilder, OverlayGpu};
 pub(in crate::app) use ui_cache::UiCache;
 
 use super::{App, Tool};
@@ -288,11 +287,11 @@ impl App {
             // (지우개 인디케이터만 매 프레임 16번). 각 요소의 색상이
             // 달라서 draw call 자체는 여전히 entry 개수만큼 나가지만,
             // "버퍼 생성"은 프레임당 최대 1번(재할당 필요시)뿐임.
-            let mut overlay = OverlayBuilder::default();
+            self.overlay.clear();
 
             if self.tool == Tool::Eraser {
                 cursor::draw_eraser_indicator(
-                    &mut overlay,
+                    &mut self.overlay,
                     self.input.last_pen_pos(),
                     super::pointer::ERASER_RADIUS_SCREEN_PX,
                 );
@@ -301,40 +300,39 @@ impl App {
             if self.tool == Tool::Select {
                 if let Some(id) = self.selected_item {
                     if let Some(item) = self.scene.item(id) {
-                        cursor::draw_selection_overlay(&mut overlay, &self.camera, item);
+                        cursor::draw_selection_overlay(&mut self.overlay, &self.camera, item);
                     }
                 }
             }
 
+            let cursor_color = self.boosted(self.pen_color);
             match self.tool {
                 Tool::Pen => cursor::draw_tool_icon_at(
-                    &mut overlay,
+                    &mut self.overlay,
                     Tool::Pen,
                     self.input.last_pen_pos(),
                     CURSOR_ICON_SIZE_SCREEN_PX,
-                    self.boosted(self.pen_color),
+                    cursor_color,
                 ),
                 Tool::Select => cursor::draw_tool_icon_at(
-                    &mut overlay,
+                    &mut self.overlay,
                     Tool::Select,
                     self.input.last_mouse_pos(),
                     CURSOR_ICON_SIZE_SCREEN_PX,
-                    self.boosted(self.pen_color),
+                    cursor_color,
                 ),
                 Tool::Eraser => {}
             }
 
-            if !overlay.entries.is_empty() {
+            if !self.overlay.entries.is_empty() {
                 if self.overlay_gpu.is_none() {
                     self.overlay_gpu = Some(OverlayGpu::new(&self.core));
                 }
                 let overlay_gpu = self.overlay_gpu.as_mut().unwrap();
-                overlay_gpu.upload(&self.core, overlay.vertices());
+                overlay_gpu.upload(&self.core, self.overlay.vertices());
 
-                // ui_pipeline 그대로 재사용(정점 포맷 동일: Vertex{pos}뿐,
-                // 화면좌표계라 카메라 오프셋도 필요 없음 — offset=[0,0]).
                 pass.set_vertex_buffer(0, overlay_gpu.buffer().slice(..));
-                for entry in &overlay.entries {
+                for entry in &self.overlay.entries {
                     let immediate = DrawImmediate {
                         offset: [
                             0.0, 0.0,
